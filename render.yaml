@@ -1,0 +1,35 @@
+# =============================================================================
+# render.yaml - Render.com Blueprint
+#
+# Deploy steps:
+#   1. Push this repo to GitHub
+#   2. Go to https://dashboard.render.com → New → Blueprint
+#   3. Connect your repo → Render reads this file automatically
+#   4. Set the RELAY_TOKEN env var in the Render dashboard to your secret token
+#   5. Copy the service URL (e.g. sshra.onrender.com) into install.ps1 -RelayHost
+#
+# FREE TIER NOTE:
+#   Free services sleep after 15 min of inactivity. First connection after sleep
+#   takes ~30-60s for cold start. Agents auto-reconnect so this is transparent.
+#   Upgrade to Starter ($7/mo) for always-on.
+# =============================================================================
+
+services:
+  - type: web
+    name: kiro-relay
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # TCP passthrough — Render routes raw TCP on port 443 for web services
+    # Use "Private Service" type for direct TCP on custom port (paid only).
+    # For free tier we use the HTTP port (Render exposes $PORT as HTTP/TCP).
+    plan: free
+    healthCheckPath: /health   # relay responds to this with 200 (see relay.c)
+    envVars:
+      - key: RELAY_TOKEN
+        sync: false            # YOU set this in the Render dashboard — never commit it
+      - key: PORT
+        fromService:
+          type: web
+          name: kiro-relay
+          property: port
+    autoDeploy: true           # redeploy on every git push

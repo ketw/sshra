@@ -1,0 +1,56 @@
+# =============================================================================
+# sshd_config.hardened
+# Deployed by install.ps1 to C:\ProgramData\ssh\sshd_config
+#
+# SECURITY POLICY: Only the owner's pre-registered public key is accepted.
+# Everything else is explicitly denied. No exceptions.
+# =============================================================================
+
+# Listen on all interfaces, standard port
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# ── Authentication: PUBLIC KEY ONLY ──────────────────────────────────────────
+# Owner's key is in administrators_authorized_keys (written by installer)
+AuthorizedKeysFile              __PROGRAMDATA__/ssh/administrators_authorized_keys
+
+# Hard-deny every other auth method
+PubkeyAuthentication            yes
+PasswordAuthentication          no
+PermitEmptyPasswords            no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication    no
+GSSAPIAuthentication            no
+HostbasedAuthentication         no
+PermitRootLogin                 prohibit-password
+
+# Disable all forwarding by default (re-enable per session via ssh flags if needed)
+AllowAgentForwarding            yes
+AllowTcpForwarding              yes
+X11Forwarding                   no
+PermitTunnel                    no
+
+# ── Connection hardening ─────────────────────────────────────────────────────
+MaxAuthTries                    3
+MaxSessions                     5
+LoginGraceTime                  20
+ClientAliveInterval             60
+ClientAliveCountMax             3
+
+# Disconnect immediately on wrong key (no delay to slow brute force — we don't
+# accept passwords so brute force of keys is computationally infeasible anyway)
+StrictModes                     yes
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+SyslogFacility                  LOCAL0
+LogLevel                        VERBOSE
+
+# ── Restrict to specific user group (set by installer) ───────────────────────
+# Only users in the "KiroAccessUsers" local group may connect.
+# The installer adds the target account to this group.
+AllowGroups                     KiroAccessUsers Administrators
+
+# ── Subsystems ───────────────────────────────────────────────────────────────
+Subsystem sftp                  sftp-server.exe

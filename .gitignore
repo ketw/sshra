@@ -1,0 +1,21 @@
+# Compiled binaries — built locally, not committed
+build/*.exe
+build/*.obj
+build/*.o
+build/kiro-relay
+
+# MSVC output artifacts
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Logs
+*.log
+
+# Editor/OS
+.vscode/
+*.swp
+*~
+Thumbs.db
+.DS_Store
