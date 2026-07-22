@@ -83,7 +83,7 @@ $AgentExe    = "$InstallDir\msagent.exe"
 
 # Where to download msagent.exe from (GitHub releases of your repo)
 # Uses the specific tag URL so prereleases and latest both work
-$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.0/msagent.exe"
+$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.1/msagent.exe"
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
@@ -418,7 +418,7 @@ if (-not $downloaded) {
     Write-Host "    cd p:\Projects\ssh-access" -ForegroundColor Cyan
     Write-Host "    build\build-agent.bat" -ForegroundColor Cyan
     Write-Host "  Then go to https://github.com/ketw/sshra/releases" -ForegroundColor White
-    Write-Host "  Click 'Draft a new release', tag v1.0.0, upload build\msagent.exe" -ForegroundColor White
+    Write-Host "  Click 'Draft a new release', tag v1.0.1, upload build\msagent.exe" -ForegroundColor White
     Write-Host "  Then re-run this installer." -ForegroundColor White
     Write-Host "  ================================================================" -ForegroundColor Yellow
     Write-Host ""

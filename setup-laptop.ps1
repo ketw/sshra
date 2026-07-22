@@ -34,8 +34,8 @@ $MsConfig   = "$env:USERPROFILE\.ms"           # user config dir
 $MsKeys     = "$MsConfig\keys"                 # private keys per device
 $MsCfgFile  = "$MsConfig\config.json"          # relay config
 $MgrExe     = "$MsDir\msmgr.exe"              # the manager binary
-$MgrUrl     = "https://github.com/ketw/sshra/releases/download/v1.0.0/msmgr.exe"
-$MgrUrlFallback = "https://github.com/ketw/sshra/releases/download/v1.0.0/msmgr.exe"
+$MgrUrl     = "https://github.com/ketw/sshra/releases/download/v1.0.1/msmgr.exe"
+$MgrUrlFallback = "https://github.com/ketw/sshra/releases/download/v1.0.1/msmgr.exe"
 
 function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
 function Write-OK   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green }
