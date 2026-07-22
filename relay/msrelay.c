@@ -1,5 +1,5 @@
-/*
- * relay.c - KiroAccess Relay Server
+﻿/*
+ * relay.c - Mass Relay Server
  *
  * Lightweight TCP relay / device registry.
  * Agents connect and register; managers connect and list/connect to devices.
@@ -8,10 +8,10 @@
  *
  * Deploy this on any VPS/cloud server with a public IP.
  *
- * Build (Linux): gcc relay.c -O2 -lpthread -o kiro-relay
- * Build (Windows): cl relay.c /Fe:kiro-relay.exe /link ws2_32.lib
+ * Build (Linux): gcc relay.c -O2 -lpthread -o msrelay
+ * Build (Windows): cl relay.c /Fe:msrelay.exe /link ws2_32.lib
  *
- * Usage: kiro-relay [--port 7744] [--token mysecret] [--cert cert.pem --key key.pem]
+ * Usage: msrelay [--port 7744] [--token mysecret] [--cert cert.pem --key key.pem]
  */
 
 #ifdef _WIN32
@@ -515,7 +515,7 @@ int main(int argc, char *argv[]) {
     memset(g_devices,  0, sizeof(g_devices));
     memset(g_managers, 0, sizeof(g_managers));
 
-    RLOG("=== KiroAccess Relay Server ===");
+    RLOG("=== Mass Relay Server ===");
     RLOG("Single-port mode (Render.com compatible)");
     RLOG("Port: %d", g_port);
     if (g_auth_token[0]) RLOG("Auth token: SET (%zu chars)", strlen(g_auth_token));

@@ -1,6 +1,6 @@
 @echo off
 :: =============================================================================
-:: build-agent.bat - Build kiro-agent.exe (Windows service)
+:: build-msagent.bat - Build msagent.exe (Windows service)
 :: Requires: Visual Studio (cl.exe) OR MinGW-w64 (gcc)
 :: Run from: project root  OR  build\  directory
 :: =============================================================================
@@ -14,10 +14,10 @@ popd
 
 set "SRC=%ROOT%\agent\agent.c"
 set "INC=%ROOT%\common"
-set "OUT=%ROOT%\build\kiro-agent.exe"
+set "OUT=%ROOT%\build\msagent.exe"
 
 echo.
-echo  [*] Building kiro-agent.exe
+echo  [*] Building msagent.exe
 echo      Source : %SRC%
 echo      Output : %OUT%
 echo.
@@ -71,7 +71,7 @@ if exist "%OUT%" (
     echo  [OK] Built: %OUT%
     echo.
     :: Embed administrator manifest if using gcc (rc.exe needed for MSVC UAC embed above)
-    echo  [*] Done. Copy kiro-agent.exe to target machines and run install.ps1
+    echo  [*] Done. Copy msagent.exe to target machines and run install.ps1
 ) else (
     echo.
     echo  [!!] Build FAILED. Check errors above.

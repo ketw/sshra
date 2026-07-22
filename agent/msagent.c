@@ -1,12 +1,12 @@
-/*
- * agent.c - KiroAccess Agent
+﻿/*
+ * agent.c - Mass Agent
  * Windows system service that runs pre-login (SYSTEM account).
  * - Registers with relay server over internet
  * - Keeps SSH server alive and tunnelled
  * - Reports hardware telemetry (CPU/GPU temp via kernel WMI/PDH/NtPower)
  * - Auto-restarts on failure
  *
- * Build: cl agent.c /Fe:kiro-agent.exe /link ws2_32.lib advapi32.lib pdh.lib
+ * Build: cl agent.c /Fe:msagent.exe /link ws2_32.lib advapi32.lib pdh.lib
  *        iphlpapi.lib setupapi.lib /SUBSYSTEM:CONSOLE
  */
 
@@ -35,11 +35,11 @@
 #include "..\common\keymgr.h"
 
 /* ---- Constants ---- */
-#define SERVICE_NAME        L"KiroAccessAgent"
-#define SERVICE_DISPLAY     L"Kiro Access Agent"
+#define SERVICE_NAME        L"MassAgent"
+#define SERVICE_DISPLAY     L"Mass Agent"
 #define SERVICE_DESC        L"Remote access agent - provides secure remote control"
-#define CONFIG_REG_KEY      L"SOFTWARE\\KiroAccess"
-#define LOG_FILE            "C:\\ProgramData\\KiroAccess\\agent.log"
+#define CONFIG_REG_KEY      L"SOFTWARE\\Mass"
+#define LOG_FILE            "C:\\ProgramData\\Mass\\agent.log"
 #define MAX_RELAY_SERVERS   4
 #define RECONNECT_DELAY_S   5
 #define HEARTBEAT_INTERVAL  30
@@ -48,7 +48,7 @@
 static SERVICE_STATUS          g_status;
 static SERVICE_STATUS_HANDLE   g_status_handle;
 static HANDLE                  g_stop_event;
-static char                    g_relay_host[256] = "relay.kiroaccess.local";
+static char                    g_relay_host[256] = "relay.Mass.local";
 static char                    g_relay_port[16]  = RELAY_PORT_STR;
 static char                    g_auth_token[MAX_TOKEN_LEN] = "";
 static char                    g_device_label[64] = "";
@@ -66,7 +66,7 @@ static FILE *g_log = NULL;
 static CRITICAL_SECTION g_log_cs;
 
 static void log_init(void) {
-    CreateDirectoryA("C:\\ProgramData\\KiroAccess", NULL);
+    CreateDirectoryA("C:\\ProgramData\\Mass", NULL);
     InitializeCriticalSection(&g_log_cs);
     g_log = fopen(LOG_FILE, "a");
 }
@@ -609,7 +609,7 @@ static DWORD WINAPI security_audit_thread(LPVOID unused) {
             HANDLE hEvt = RegisterEventSourceW(NULL, SERVICE_NAME);
             if (hEvt) {
                 const wchar_t *msgs[] = {
-                    L"KiroAccess SECURITY ALERT: authorized_keys was tampered with. "
+                    L"Mass SECURITY ALERT: authorized_keys was tampered with. "
                     L"sshd has been stopped. Re-run install.ps1 to restore access."
                 };
                 ReportEventW(hEvt, EVENTLOG_ERROR_TYPE, 0, 0xC0000001, NULL,
@@ -670,7 +670,7 @@ static VOID WINAPI svc_main(DWORD argc, LPWSTR *argv) {
 
     InitializeCriticalSection(&g_sock_cs);
     log_init();
-    LOG_INFO("=== KiroAccess Agent starting ===");
+    LOG_INFO("=== Mass Agent starting ===");
 
     /* Init Winsock */
     WSADATA wsa;

@@ -48,9 +48,9 @@ SyslogFacility                  LOCAL0
 LogLevel                        VERBOSE
 
 # ── Restrict to specific user group (set by installer) ───────────────────────
-# Only users in the "KiroAccessUsers" local group may connect.
+# Only users in the "MassUsers" local group may connect.
 # The installer adds the target account to this group.
-AllowGroups                     KiroAccessUsers Administrators
+AllowGroups                     MassUsers Administrators
 
 # ── Subsystems ───────────────────────────────────────────────────────────────
 Subsystem sftp                  sftp-server.exe

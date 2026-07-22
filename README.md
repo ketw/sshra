@@ -1,4 +1,4 @@
-# KiroAccess
+﻿# Mass
 
 Remote access system written in C. Lets you control any of your Windows PCs
 from your laptop, anywhere on the internet — SSH shell, file transfer, RDP,
@@ -6,7 +6,7 @@ and live hardware telemetry (CPU/GPU temps, RAM, network).
 
 ```
 ┌─────────────┐        internet / LAN        ┌──────────────────┐
-│  Your Laptop│ ◄──── kiro-manager.exe ──────►│  Relay Server    │
+│  Your Laptop│ ◄──── msmgr.exe ──────►│  Relay Server    │
 │             │                               │  (VPS / cloud)   │
 └─────────────┘                               └────────┬─────────┘
                                                        │
@@ -14,7 +14,7 @@ and live hardware telemetry (CPU/GPU temps, RAM, network).
                     │                    │             │
              ┌──────▼──────┐    ┌────────▼─────┐  ┌───▼──────────┐
              │ Gaming PC   │    │ Bedroom PC   │  │ Workstation  │
-             │ kiro-agent  │    │ kiro-agent   │  │ kiro-agent   │
+             │ msagent  │    │ msagent   │  │ msagent   │
              └─────────────┘    └──────────────┘  └──────────────┘
 ```
 
@@ -41,7 +41,7 @@ ssh-access/
 │   ├── build-manager.bat Build manager only
 │   └── build-relay.sh  Build relay (Linux/macOS VPS)
 └── deploy/
-    └── kiro-relay.service  systemd unit for the relay
+    └── msrelay.service  systemd unit for the relay
 ```
 
 ---
@@ -59,16 +59,16 @@ cd ssh-access
 bash build/build-relay.sh
 
 # Copy the binary and run it:
-sudo cp build/kiro-relay /usr/local/bin/
-sudo cp deploy/kiro-relay.service /etc/systemd/system/
+sudo cp build/msrelay /usr/local/bin/
+sudo cp deploy/msrelay.service /etc/systemd/system/
 
 # Edit the service file — set your secret token:
-sudo nano /etc/systemd/system/kiro-relay.service
+sudo nano /etc/systemd/system/msrelay.service
 # Change:  --token REPLACE_WITH_YOUR_TOKEN
 # To:      --token mysupersecrettoken123
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now kiro-relay
+sudo systemctl enable --now msrelay
 ```
 
 The relay listens on:
@@ -85,7 +85,7 @@ Run this once on each machine you want to access. Open PowerShell as
 Administrator and run:
 
 ```powershell
-# Option A — if you've built kiro-agent.exe already, put it next to install.ps1
+# Option A — if you've built msagent.exe already, put it next to install.ps1
 .\installer\install.ps1 -RelayHost "your.vps.ip" -Label "Gaming PC" -Token "mysupersecrettoken123"
 
 # Option B — completely interactive (prompts for everything)
@@ -94,7 +94,7 @@ Administrator and run:
 
 The installer will:
 1. Install **Windows OpenSSH Server** (if not present)
-2. Deploy `kiro-agent.exe` as a **Windows service** (SYSTEM account)
+2. Deploy `msagent.exe` as a **Windows service** (SYSTEM account)
 3. Configure the service to **start before the login screen**
 4. Add **firewall rules** for SSH (port 22) and relay (port 7744)
 5. Write config to the registry
@@ -130,10 +130,10 @@ ssh-keygen -t ed25519 -C "laptop"
 .\build\build-manager.bat
 
 # Run (first time — pass relay info as arguments):
-.\build\kiro-manager.exe your.vps.ip mysupersecrettoken123
+.\build\msmgr.exe your.vps.ip mysupersecrettoken123
 
 # After that, config is saved — just run:
-.\build\kiro-manager.exe
+.\build\msmgr.exe
 ```
 
 ---
@@ -262,4 +262,4 @@ All three components must use the same token:
 |----------------|-------------------------------------------------|
 | Relay server   | `--token` flag (or systemd unit file)           |
 | Agent (each PC)| Set during `install.ps1` run → stored in registry |
-| Manager (laptop)| First argument to `kiro-manager.exe` → stored in HKCU registry |
+| Manager (laptop)| First argument to `msmgr.exe` → stored in HKCU registry |

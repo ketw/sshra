@@ -4,14 +4,14 @@
 :: =============================================================================
 echo.
 echo  ============================================
-echo   KiroAccess - Build All
+echo   Mass - Build All
 echo  ============================================
 echo.
 
-call "%~dp0build-agent.bat"
+call "%~dp0build-msagent.bat"
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
-call "%~dp0build-manager.bat"
+call "%~dp0build-msmgr.bat"
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 
 echo.
@@ -19,7 +19,7 @@ echo  ============================================
 echo   All builds complete.
 echo.
 echo   Artifacts:
-echo     build\kiro-agent.exe   <- deploy to each PC
-echo     build\kiro-manager.exe <- run on your laptop
+echo     build\msagent.exe   <- deploy to each PC
+echo     build\msmgr.exe <- run on your laptop
 echo  ============================================
 echo.

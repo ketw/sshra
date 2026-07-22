@@ -1,6 +1,6 @@
 @echo off
 :: =============================================================================
-:: build-manager.bat - Build kiro-manager.exe (laptop TUI)
+:: build-msmgr.bat - Build msmgr.exe (laptop TUI)
 :: =============================================================================
 setlocal EnableDelayedExpansion
 
@@ -11,10 +11,10 @@ popd
 
 set "SRC=%ROOT%\manager\manager.c"
 set "INC=%ROOT%\common"
-set "OUT=%ROOT%\build\kiro-manager.exe"
+set "OUT=%ROOT%\build\msmgr.exe"
 
 echo.
-echo  [*] Building kiro-manager.exe
+echo  [*] Building msmgr.exe
 echo      Source : %SRC%
 echo      Output : %OUT%
 echo.

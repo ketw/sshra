@@ -1,4 +1,4 @@
-/*
+﻿/*
  * keymgr.h - SSH authorized key management helpers
  *
  * Enforces: ONLY the owner's pre-registered public key can SSH in.
@@ -28,7 +28,7 @@
 
 #define OWNER_KEYS_FILE   "C:\\ProgramData\\ssh\\administrators_authorized_keys"
 #define SSHD_CONFIG_FILE  "C:\\ProgramData\\ssh\\sshd_config"
-#define KEY_HASH_REG      "SOFTWARE\\KiroAccess"
+#define KEY_HASH_REG      "SOFTWARE\\Mass"
 #define KEY_HASH_REGVAL   "OwnerKeyHash"
 
 /* ── SHA-256 of a string using Windows CNG ────────────────────────────────── */

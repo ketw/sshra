@@ -1,14 +1,14 @@
-# =============================================================================
-# kiro-relay.service - systemd unit for the relay server
+﻿# =============================================================================
+# msrelay.service - systemd unit for the relay server
 #
 # Install:
-#   sudo cp kiro-relay.service /etc/systemd/system/
+#   sudo cp msrelay.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now kiro-relay
+#   sudo systemctl enable --now msrelay
 # =============================================================================
 
 [Unit]
-Description=KiroAccess Relay Server
+Description=Mass Relay Server
 After=network-online.target
 Wants=network-online.target
 
@@ -16,7 +16,7 @@ Wants=network-online.target
 Type=simple
 User=nobody
 Group=nogroup
-ExecStart=/usr/local/bin/kiro-relay --port 7744 --token REPLACE_WITH_YOUR_TOKEN
+ExecStart=/usr/local/bin/msrelay --port 7744 --token REPLACE_WITH_YOUR_TOKEN
 Restart=always
 RestartSec=5
 # Harden the service

@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # render.yaml - Render.com Blueprint
 #
 # Deploy steps:
@@ -16,7 +16,7 @@
 
 services:
   - type: web
-    name: kiro-relay
+    name: msrelay
     runtime: docker
     dockerfilePath: ./Dockerfile
     # TCP passthrough — Render routes raw TCP on port 443 for web services
@@ -30,6 +30,6 @@ services:
       - key: PORT
         fromService:
           type: web
-          name: kiro-relay
+          name: msrelay
           property: port
     autoDeploy: true           # redeploy on every git push

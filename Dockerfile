@@ -1,5 +1,5 @@
 # =============================================================================
-# Dockerfile - KiroAccess Relay Server
+# Dockerfile - Mass Relay Server
 # Deployed to Render.com as a Web Service (TCP)
 # =============================================================================
 FROM debian:bookworm-slim AS builder
@@ -17,18 +17,18 @@ RUN gcc relay/relay.c \
     -O2 -Wall \
     -D_GNU_SOURCE \
     -lpthread \
-    -o kiro-relay
+    -o msrelay
 
 # ── Runtime image (minimal) ───────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN useradd -r -s /bin/false kirorelay
+RUN useradd -r -s /bin/false msrelay
 
 WORKDIR /app
-COPY --from=builder /build/kiro-relay .
-RUN chown kirorelay:kirorelay /app/kiro-relay && chmod 500 /app/kiro-relay
+COPY --from=builder /build/msrelay .
+RUN chown msrelay:msrelay /app/msrelay && chmod 500 /app/msrelay
 
-USER kirorelay
+USER msrelay
 
 # Render sets PORT env var. We read it at runtime (see entrypoint).
 # Agent port  = $PORT      (Render exposes this)
@@ -43,4 +43,4 @@ EXPOSE 7744
 ENV RELAY_TOKEN=""
 ENV PORT=7744
 
-ENTRYPOINT ["/bin/sh", "-c", "exec /app/kiro-relay --port ${PORT} --token ${RELAY_TOKEN}"]
+ENTRYPOINT ["/bin/sh", "-c", "exec /app/msrelay --port ${PORT} --token ${RELAY_TOKEN}"]

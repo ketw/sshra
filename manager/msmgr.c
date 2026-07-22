@@ -1,5 +1,5 @@
-/*
- * manager.c - KiroAccess Manager (TUI)
+﻿/*
+ * manager.c - Mass Manager (TUI)
  *
  * Terminal UI for your laptop. Shows all registered devices anywhere on the
  * internet, live hardware stats, and lets you:
@@ -13,10 +13,10 @@
  *
  * Dual discovery: Internet (relay) + LAN mDNS broadcast simultaneously.
  *
- * Build: cl manager.c /Fe:kiro-manager.exe /I..\common
+ * Build: cl manager.c /Fe:msmgr.exe /I..\common
  *        /link ws2_32.lib advapi32.lib /SUBSYSTEM:CONSOLE
  *
- * Or gcc: gcc manager.c -I../common -O2 -o kiro-manager.exe -lws2_32 -ladvapi32
+ * Or gcc: gcc manager.c -I../common -O2 -o msmgr.exe -lws2_32 -ladvapi32
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -45,12 +45,15 @@
 #pragma comment(lib, "iphlpapi.lib")
 
 /* ── Config ────────────────────────────────────────────────────────────────── */
-#define CONFIG_REG_KEY      "SOFTWARE\\KiroAccess\\Manager"
+#define CONFIG_REG_KEY      "SOFTWARE\\Mass\\Manager"
 #define MAX_KNOWN_RELAYS    8
 #define MAX_DEVICES_UI      64
 #define REFRESH_INTERVAL_MS 5000
-#define LAN_DISCOVERY_PORT  7745   /* UDP broadcast for LAN discovery */
-#define LAN_BEACON_INTERVAL 10000  /* ms */
+#define LAN_DISCOVERY_PORT  7745
+#define LAN_BEACON_INTERVAL 10000
+
+/* Forward declaration — defined in config section below */
+static const char *find_key_for_device(const char *label);
 
 /* ── Device as seen by manager ─────────────────────────────────────────────── */
 typedef struct {
@@ -201,7 +204,7 @@ static void ui_draw(void) {
 
     /* ── Header ── */
     printf(COL_BOLD COL_CYAN);
-    printf("  KiroAccess Manager");
+    printf("  Mass Manager");
     printf(COL_DIM "  %d device(s) known", g_device_count);
     printf(COL_RESET "\n");
     printf(COL_DIM);
@@ -577,7 +580,7 @@ static DWORD WINAPI lan_discovery_thread(LPVOID unused) {
         /* Send discovery probe broadcast */
         char probe[128];
         json_builder_t jb; jb_init(&jb, probe, sizeof(probe));
-        jb_begin(&jb); jb_str(&jb, "type", "kiro_probe"); jb_end(&jb);
+        jb_begin(&jb); jb_str(&jb, "type", "ms_probe"); jb_end(&jb);
 
         struct sockaddr_in bcast_addr;
         memset(&bcast_addr, 0, sizeof(bcast_addr));
@@ -614,73 +617,90 @@ static DWORD WINAPI lan_discovery_thread(LPVOID unused) {
  * ACTIONS: SSH, SFTP, RDP, new window
  * ============================================================ */
 
-/* Launch ssh.exe in a new console window */
+/* Launch ssh.exe in a new console window — auto-picks key from ~/.ms/config.json */
 static void action_ssh(ui_device_t *d) {
     if (!d->online && !d->ip[0]) {
         printf(COL_YELLOW "\n  Device is offline.\n" COL_RESET);
         Sleep(1500); return;
     }
     con_show_cursor();
-    /* Ask for username */
-    printf("\n  SSH username (default: Administrator): ");
-    fflush(stdout);
+
+    /* Get username — default Administrator, no prompt if key found */
     char uname[64] = "Administrator";
-    /* Restore line input mode temporarily */
-    DWORD mode;
-    GetConsoleMode(g_console_in, &mode);
-    SetConsoleMode(g_console_in, ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
-    fgets(uname, sizeof(uname), stdin);
-    uname[strcspn(uname, "\r\n")] = '\0';
-    if (uname[0] == '\0') strcpy(uname, "Administrator");
-    SetConsoleMode(g_console_in, ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT);
+    const char *key_path = find_key_for_device(d->label);
 
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-             "ssh -p %u -o StrictHostKeyChecking=accept-new %s@%s",
-             d->ssh_port, uname, d->ip);
+    /* Build SSH command */
+    char cmd[768];
+    if (key_path) {
+        snprintf(cmd, sizeof(cmd),
+            "ssh -p %u -i \"%s\" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes %s@%s",
+            d->ssh_port, key_path, uname, d->ip);
+    } else {
+        /* No key found — ask for username and fall back to interactive auth */
+        printf("\n  SSH username (default: Administrator): ");
+        fflush(stdout);
+        DWORD mode;
+        GetConsoleMode(g_console_in, &mode);
+        SetConsoleMode(g_console_in, ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+        fgets(uname, sizeof(uname), stdin);
+        uname[strcspn(uname, "\r\n")] = '\0';
+        if (uname[0] == '\0') strcpy(uname, "Administrator");
+        SetConsoleMode(g_console_in, ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT);
+        snprintf(cmd, sizeof(cmd),
+            "ssh -p %u -o StrictHostKeyChecking=accept-new %s@%s",
+            d->ssh_port, uname, d->ip);
+    }
 
-    /* Open in a new Window */
-    STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
-    PROCESS_INFORMATION pi;
-    char full_cmd[600];
+    /* Open in new console window */
+    char full_cmd[840];
     snprintf(full_cmd, sizeof(full_cmd), "cmd.exe /K \"%s\"", cmd);
+    STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
     if (!CreateProcessA(NULL, full_cmd, NULL, NULL, FALSE,
                         CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
-        /* Fallback: run in existing console */
-        system(cmd);
+        system(cmd); /* fallback: same window */
     } else {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
 }
 
-/* Launch sftp/WinSCP in new window */
+/* Launch sftp/WinSCP — auto-picks key */
 static void action_sftp(ui_device_t *d) {
     if (!d->online) {
         printf(COL_YELLOW "\n  Device is offline.\n" COL_RESET);
         Sleep(1500); return;
     }
-    /* Try WinSCP first (GUI), fallback to sftp CLI */
+    const char *key_path = find_key_for_device(d->label);
+
+    /* Try WinSCP GUI first */
     char winscp[MAX_PATH];
     ExpandEnvironmentStringsA("%ProgramFiles%\\WinSCP\\WinSCP.exe", winscp, MAX_PATH);
-
     if (GetFileAttributesA(winscp) != INVALID_FILE_ATTRIBUTES) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "\"%s\" sftp://Administrator@%s:%u/",
-                 winscp, d->ip, d->ssh_port);
-        ShellExecuteA(NULL, "open", winscp, cmd + (int)(strlen(winscp)+3), NULL, SW_SHOW);
-    } else {
-        /* CLI sftp */
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "sftp -P %u Administrator@%s", d->ssh_port, d->ip);
-        char full[600];
-        snprintf(full, sizeof(full), "cmd.exe /K \"%s\"", cmd);
-        STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
-        PROCESS_INFORMATION pi;
-        CreateProcessA(NULL, full, NULL, NULL, FALSE, CREATE_NEW_CONSOLE,
-                       NULL, NULL, &si, &pi);
-        CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+        char args[512];
+        if (key_path)
+            snprintf(args, sizeof(args), "sftp://Administrator@%s:%u/ /privatekey=\"%s\"",
+                     d->ip, d->ssh_port, key_path);
+        else
+            snprintf(args, sizeof(args), "sftp://Administrator@%s:%u/", d->ip, d->ssh_port);
+        ShellExecuteA(NULL, "open", winscp, args, NULL, SW_SHOW);
+        return;
     }
+
+    /* CLI sftp fallback */
+    char cmd[512];
+    if (key_path)
+        snprintf(cmd, sizeof(cmd), "sftp -P %u -i \"%s\" -o IdentitiesOnly=yes Administrator@%s",
+                 d->ssh_port, key_path, d->ip);
+    else
+        snprintf(cmd, sizeof(cmd), "sftp -P %u Administrator@%s", d->ssh_port, d->ip);
+
+    char full[600];
+    snprintf(full, sizeof(full), "cmd.exe /K \"%s\"", cmd);
+    STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
+    CreateProcessA(NULL, full, NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
 }
 
 /* Launch RDP (mstsc) */
@@ -700,32 +720,133 @@ static void action_new_window(ui_device_t *d) {
 }
 
 /* ============================================================
- * CONFIG: load/save from registry
+ * CONFIG: load from ~/.ms/config.json (written by setup-laptop.ps1)
+ * Falls back to registry if JSON not found.
  * ============================================================ */
 
+/* Global key map: device_id/label -> key path */
+#define MAX_KEY_ENTRIES 32
+typedef struct { char label[64]; char key_path[MAX_PATH]; } key_entry_t;
+static key_entry_t g_key_map[MAX_KEY_ENTRIES];
+static int         g_key_count = 0;
+static char        g_key_dir[MAX_PATH] = "";
+
+/* Look up the SSH key path for a given device label */
+static const char *find_key_for_device(const char *label) {
+    for (int i = 0; i < g_key_count; i++) {
+        if (_stricmp(g_key_map[i].label, label) == 0)
+            return g_key_map[i].key_path;
+    }
+    /* Fallback: look for any key file in key_dir */
+    if (g_key_dir[0]) {
+        static char found_path[MAX_PATH];
+        WIN32_FIND_DATAA fd;
+        char pattern[MAX_PATH];
+        snprintf(pattern, sizeof(pattern), "%s\\id_*", g_key_dir);
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            snprintf(found_path, sizeof(found_path), "%s\\%s", g_key_dir, fd.cFileName);
+            FindClose(h);
+            return found_path;
+        }
+    }
+    return NULL;
+}
+
+/* Parse a JSON string value from a flat JSON object */
+static void json_cfg_str(const char *json, const char *key, char *out, size_t cap) {
+    json_find_str(json, key, out, (int)cap);
+}
+
 static void config_load(void) {
+    /* Try ~/.ms/config.json first */
+    char cfg_path[MAX_PATH];
+    ExpandEnvironmentStringsA("%USERPROFILE%\\.ms\\config.json", cfg_path, MAX_PATH);
+
+    HANDLE fh = CreateFileA(cfg_path, GENERIC_READ, FILE_SHARE_READ,
+                            NULL, OPEN_EXISTING, 0, NULL);
+    if (fh != INVALID_HANDLE_VALUE) {
+        DWORD sz = GetFileSize(fh, NULL);
+        if (sz > 0 && sz < 65536) {
+            char *buf = (char*)malloc(sz + 1);
+            if (buf) {
+                DWORD rd;
+                ReadFile(fh, buf, sz, &rd, NULL);
+                buf[rd] = '\0';
+
+                /* Parse relay */
+                char host[256]="", port[16]="", token[MAX_TOKEN_LEN]="";
+                json_cfg_str(buf, "relay_host",  host,  sizeof(host));
+                json_cfg_str(buf, "relay_port",  port,  sizeof(port));
+                json_cfg_str(buf, "relay_token", token, sizeof(token));
+                json_cfg_str(buf, "key_dir",     g_key_dir, sizeof(g_key_dir));
+
+                if (host[0] && g_relay_count < MAX_KNOWN_RELAYS) {
+                    strncpy(g_relays[g_relay_count].host,  host,  255);
+                    strncpy(g_relays[g_relay_count].port,  port[0] ? port : "10000", 15);
+                    strncpy(g_relays[g_relay_count].token, token, MAX_TOKEN_LEN-1);
+                    g_relay_count++;
+                }
+
+                /* Parse keys object: scan for "Label":"path" pairs */
+                const char *keys_start = strstr(buf, "\"keys\"");
+                if (keys_start) {
+                    keys_start = strchr(keys_start, '{');
+                    if (keys_start) {
+                        const char *p = keys_start + 1;
+                        while (*p && *p != '}' && g_key_count < MAX_KEY_ENTRIES) {
+                            /* skip whitespace */
+                            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') p++;
+                            if (*p != '"') break;
+                            p++;
+                            /* read label */
+                            int li = 0;
+                            while (*p && *p != '"' && li < 63) g_key_map[g_key_count].label[li++] = *p++;
+                            g_key_map[g_key_count].label[li] = '\0';
+                            if (*p == '"') p++;
+                            /* skip : */
+                            while (*p == ' ' || *p == ':') p++;
+                            if (*p != '"') break;
+                            p++;
+                            /* read path */
+                            int pi2 = 0;
+                            while (*p && *p != '"' && pi2 < MAX_PATH-1) {
+                                if (*p == '\\' && *(p+1) == '\\') { g_key_map[g_key_count].key_path[pi2++] = '\\'; p += 2; }
+                                else g_key_map[g_key_count].key_path[pi2++] = *p++;
+                            }
+                            g_key_map[g_key_count].key_path[pi2] = '\0';
+                            if (*p == '"') p++;
+                            if (g_key_map[g_key_count].label[0] && g_key_map[g_key_count].key_path[0])
+                                g_key_count++;
+                        }
+                    }
+                }
+                free(buf);
+                CloseHandle(fh);
+                return; /* loaded from JSON — skip registry */
+            }
+        }
+        CloseHandle(fh);
+    }
+
+    /* Fallback: registry */
     HKEY hkey;
     if (RegOpenKeyExA(HKEY_CURRENT_USER, CONFIG_REG_KEY, 0, KEY_READ, &hkey) != ERROR_SUCCESS)
         return;
-
-    DWORD relay_count = 0, sz = sizeof(relay_count);
-    RegQueryValueExA(hkey, "RelayCount", NULL, NULL, (LPBYTE)&relay_count, &sz);
+    DWORD relay_count = 0, rsz = sizeof(relay_count);
+    RegQueryValueExA(hkey, "RelayCount", NULL, NULL, (LPBYTE)&relay_count, &rsz);
     if (relay_count > MAX_KNOWN_RELAYS) relay_count = MAX_KNOWN_RELAYS;
-
     for (DWORD i = 0; i < relay_count; i++) {
-        char key[32];
+        char key[32]; rsz = sizeof(g_relays[i].host);
         snprintf(key, sizeof(key), "RelayHost%lu", i);
-        sz = sizeof(g_relays[i].host);
-        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].host, &sz);
-
+        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].host, &rsz);
+        rsz = sizeof(g_relays[i].port);
         snprintf(key, sizeof(key), "RelayPort%lu", i);
-        sz = sizeof(g_relays[i].port);
-        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].port, &sz);
+        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].port, &rsz);
         if (!g_relays[i].port[0]) strcpy(g_relays[i].port, RELAY_PORT_STR);
-
+        rsz = sizeof(g_relays[i].token);
         snprintf(key, sizeof(key), "RelayToken%lu", i);
-        sz = sizeof(g_relays[i].token);
-        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].token, &sz);
+        RegQueryValueExA(hkey, key, NULL, NULL, (LPBYTE)g_relays[i].token, &rsz);
     }
     g_relay_count = (int)relay_count;
     RegCloseKey(hkey);
@@ -885,7 +1006,7 @@ static void input_loop(void) {
  * MAIN
  * ============================================================ */
 int main(int argc, char *argv[]) {
-    /* Quick relay config from command line: kiro-manager.exe relay.host token */
+    /* Quick relay config from command line: msmgr.exe relay.host token */
     if (argc >= 3) {
         strncpy(g_relays[0].host,  argv[1], 255);
         strncpy(g_relays[0].port,  argc >= 4 ? argv[3] : RELAY_PORT_STR, 15);
@@ -904,9 +1025,9 @@ int main(int argc, char *argv[]) {
     /* Show setup prompt if no relays configured */
     if (g_relay_count == 0) {
         con_cls();
-        printf(COL_BOLD COL_CYAN "  KiroAccess Manager - First Run Setup\n\n" COL_RESET);
+        printf(COL_BOLD COL_CYAN "  Mass Manager - First Run Setup\n\n" COL_RESET);
         printf("  No relay servers configured yet.\n\n");
-        printf("  Usage: kiro-manager.exe <relay-host> <auth-token> [port]\n");
+        printf("  Usage: msmgr.exe <relay-host> <auth-token> [port]\n");
         printf("  Or press any key to configure interactively...\n\n");
         fflush(stdout);
         /* wait for a key or just fall through to add_relay */

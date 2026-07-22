@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build-relay.sh - Build kiro-relay for Linux/macOS VPS
+# build-msrelay.sh - Build msrelay for Linux/macOS VPS
 # The relay server runs on any cloud VPS with a public IP.
 # =============================================================================
 set -euo pipefail
@@ -9,10 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 SRC="$ROOT/relay/relay.c"
 INC="$ROOT/common"
-OUT="$ROOT/build/kiro-relay"
+OUT="$ROOT/build/msrelay"
 
 echo ""
-echo "  [*] Building kiro-relay"
+echo "  [*] Building msrelay"
 echo "      Source : $SRC"
 echo "      Output : $OUT"
 echo ""
@@ -37,6 +37,6 @@ echo ""
 echo "  [OK] Built: $OUT"
 echo ""
 echo "  Run on your VPS:"
-echo "    ./kiro-relay --port 7744 --token YOUR_SECRET_TOKEN"
+echo "    ./msrelay --port 7744 --token YOUR_SECRET_TOKEN"
 echo ""
-echo "  To run as a systemd service, see: deploy/kiro-relay.service"
+echo "  To run as a systemd service, see: deploy/msrelay.service"

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    KiroAccess - Fully Automatic Self-Contained Installer
+    Mass - Fully Automatic Self-Contained Installer
     Supports PowerShell 5.1+. Self-elevates to admin automatically.
 .EXAMPLE
     # One-liner from anywhere (even non-admin terminal):
@@ -28,7 +28,7 @@ $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 if (-not $isAdmin) {
     Write-Host "  Not running as Administrator. Re-launching elevated..." -ForegroundColor Yellow
     # Always download fresh copy to temp — works whether run via iex or as a file
-    $tmpScript = "$env:TEMP\kiro_install.ps1"
+    $tmpScript = "$env:TEMP\ms_install.ps1"
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest "https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1" `
@@ -73,17 +73,17 @@ trap {
 }
 
 # ── Paths & names ─────────────────────────────────────────────────────────────
-$InstallDir  = "C:\Program Files\KiroAccess"
-$DataDir     = "C:\ProgramData\KiroAccess"
+$InstallDir  = "C:\Program Files\Mass"
+$DataDir     = "C:\ProgramData\Mass"
 $SshDir      = "C:\ProgramData\ssh"
-$ServiceName = "KiroAccessAgent"
-$RegKey      = "HKLM:\SOFTWARE\KiroAccess"
-$AccessGroup = "KiroAccessUsers"
-$AgentExe    = "$InstallDir\kiro-agent.exe"
+$ServiceName = "MassAgent"
+$RegKey      = "HKLM:\SOFTWARE\Mass"
+$AccessGroup = "MassUsers"
+$AgentExe    = "$InstallDir\msagent.exe"
 
-# Where to download kiro-agent.exe from (GitHub releases of your repo)
+# Where to download msagent.exe from (GitHub releases of your repo)
 # Uses the specific tag URL so prereleases and latest both work
-$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.0/kiro-agent.exe"
+$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.0/msagent.exe"
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
@@ -95,7 +95,7 @@ function Write-Banner {
     Clear-Host
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
-    Write-Host "  ║        KiroAccess - Auto Installer           ║" -ForegroundColor Magenta
+    Write-Host "  ║        Mass - Auto Installer           ║" -ForegroundColor Magenta
     Write-Host "  ║   Sets up everything. No manual steps.       ║" -ForegroundColor Magenta
     Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
     Write-Host ""
@@ -103,7 +103,7 @@ function Write-Banner {
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 if ($Uninstall) {
-    Write-Host "  Uninstalling KiroAccess..." -ForegroundColor Yellow
+    Write-Host "  Uninstalling Mass..." -ForegroundColor Yellow
     Stop-Service  $ServiceName -Force -ErrorAction SilentlyContinue
     Start-Sleep 2
     if (Test-Path $AgentExe) { & $AgentExe --uninstall 2>$null }
@@ -111,9 +111,9 @@ if ($Uninstall) {
     Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $DataDir    -ErrorAction SilentlyContinue
     if (Test-Path $RegKey) { Remove-Item -Recurse -Force $RegKey }
-    Remove-NetFirewallRule -DisplayName "KiroAccess*" -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -DisplayName "Mass*" -ErrorAction SilentlyContinue
     Remove-LocalGroup $AccessGroup -ErrorAction SilentlyContinue
-    Write-Host "  Done. KiroAccess removed." -ForegroundColor Green
+    Write-Host "  Done. Mass removed." -ForegroundColor Green
     exit 0
 }
 
@@ -278,7 +278,7 @@ if (-not $sshKeygen) {
 $sshKeygenExe = if ($sshKeygen -is [string]) { $sshKeygen } else { $sshKeygen.Source }
 
 if (-not (Test-Path $PrivKeyPath)) {
-    & $sshKeygenExe -t ed25519 -f $PrivKeyPath -N '""' -C "kiroaccess-owner" 2>$null
+    & $sshKeygenExe -t ed25519 -f $PrivKeyPath -N '""' -C "Mass-owner" 2>$null
     Write-OK "SSH keypair generated"
 } else {
     Write-OK "SSH keypair already exists"
@@ -292,7 +292,7 @@ Write-Step "Deploying hardened SSH config (your key only, no passwords)..."
 
 $progDataFwd = $env:ProgramData.Replace('\','/')
 $sshdConfig = @"
-# KiroAccess hardened sshd_config - auto-generated, do not edit manually
+# Mass hardened sshd_config - auto-generated, do not edit manually
 Port 22
 AuthorizedKeysFile          $progDataFwd/ssh/administrators_authorized_keys
 PubkeyAuthentication        yes
@@ -339,10 +339,10 @@ try {
     Write-OK "authorized_keys permissions set via icacls"
 }
 
-# ── Step 6: Create KiroAccessUsers group ─────────────────────────────────────
+# ── Step 6: Create MassUsers group ─────────────────────────────────────
 Write-Step "Setting up access control group..."
 if (-not (Get-LocalGroup $AccessGroup -ErrorAction SilentlyContinue)) {
-    New-LocalGroup -Name $AccessGroup -Description "KiroAccess SSH access group" | Out-Null
+    New-LocalGroup -Name $AccessGroup -Description "Mass SSH access group" | Out-Null
 }
 Add-LocalGroupMember -Group $AccessGroup -Member "Administrators" -ErrorAction SilentlyContinue
 Write-OK "Access group configured"
@@ -353,8 +353,8 @@ Restart-Service sshd -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Write-OK "sshd restarted"
 
-# ── Step 7: Download kiro-agent.exe ───────────────────────────────────────────
-Write-Step "Downloading kiro-agent.exe..."
+# ── Step 7: Download msagent.exe ───────────────────────────────────────────
+Write-Step "Downloading msagent.exe..."
 
 $downloaded = $false
 
@@ -364,10 +364,10 @@ $downloaded = $false
 # Try GitHub release
 try {
     $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "kiro-installer/1.0")
+    $wc.Headers.Add("User-Agent", "ms-installer/1.0")
     $wc.DownloadFile($AgentDownloadUrl, $AgentExe)
     if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
-        Write-OK "Downloaded kiro-agent.exe from GitHub"
+        Write-OK "Downloaded msagent.exe from GitHub"
         $downloaded = $true
     }
 } catch {
@@ -375,9 +375,9 @@ try {
     Write-Warn "Trying Invoke-WebRequest fallback..."
     try {
         Invoke-WebRequest -Uri $AgentDownloadUrl -OutFile $AgentExe `
-            -UseBasicParsing -Headers @{"User-Agent"="kiro-installer/1.0"} -ErrorAction Stop
+            -UseBasicParsing -Headers @{"User-Agent"="ms-installer/1.0"} -ErrorAction Stop
         if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
-            Write-OK "Downloaded kiro-agent.exe (fallback)"
+            Write-OK "Downloaded msagent.exe (fallback)"
             $downloaded = $true
         }
     } catch {
@@ -389,10 +389,10 @@ try {
 if (-not $downloaded) {
     $scriptPath = $MyInvocation.MyCommand.Path
     if ($scriptPath) {
-        $localCopy = Join-Path (Split-Path $scriptPath) "kiro-agent.exe"
+        $localCopy = Join-Path (Split-Path $scriptPath) "msagent.exe"
         if (Test-Path $localCopy) {
             Copy-Item $localCopy $AgentExe -Force
-            Write-OK "Copied bundled kiro-agent.exe"
+            Write-OK "Copied bundled msagent.exe"
             $downloaded = $true
         }
     }
@@ -400,10 +400,10 @@ if (-not $downloaded) {
 
 # Fallback: check temp dir (in case it was downloaded there)
 if (-not $downloaded) {
-    $tempCopy = "$env:TEMP\kiro-agent.exe"
+    $tempCopy = "$env:TEMP\msagent.exe"
     if (Test-Path $tempCopy) {
         Copy-Item $tempCopy $AgentExe -Force
-        Write-OK "Found kiro-agent.exe in temp"
+        Write-OK "Found msagent.exe in temp"
         $downloaded = $true
     }
 }
@@ -411,14 +411,14 @@ if (-not $downloaded) {
 if (-not $downloaded) {
     Write-Host ""
     Write-Host "  ================================================================" -ForegroundColor Yellow
-    Write-Host "  kiro-agent.exe could not be downloaded automatically." -ForegroundColor Yellow
+    Write-Host "  msagent.exe could not be downloaded automatically." -ForegroundColor Yellow
     Write-Host "  This is because no GitHub Release exists yet for the repo." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  TO FIX: On your laptop, run:" -ForegroundColor White
     Write-Host "    cd p:\Projects\ssh-access" -ForegroundColor Cyan
     Write-Host "    build\build-agent.bat" -ForegroundColor Cyan
     Write-Host "  Then go to https://github.com/ketw/sshra/releases" -ForegroundColor White
-    Write-Host "  Click 'Draft a new release', tag v1.0.0, upload build\kiro-agent.exe" -ForegroundColor White
+    Write-Host "  Click 'Draft a new release', tag v1.0.0, upload build\msagent.exe" -ForegroundColor White
     Write-Host "  Then re-run this installer." -ForegroundColor White
     Write-Host "  ================================================================" -ForegroundColor Yellow
     Write-Host ""
@@ -443,7 +443,7 @@ Set-ItemProperty -Path $RegKey -Name "DeviceID"    -Value $DeviceId   -Type Stri
 Write-OK "Registry config written"
 
 # ── Step 9: Install Windows service ───────────────────────────────────────────
-Write-Step "Installing KiroAccess Windows service..."
+Write-Step "Installing Mass Windows service..."
 
 # Remove old service if present
 $old = Get-Service $ServiceName -ErrorAction SilentlyContinue
@@ -460,7 +460,7 @@ Start-Sleep 2
 # Confirm running
 $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
-    Write-OK "KiroAccess Agent service is running"
+    Write-OK "Mass Agent service is running"
 } else {
     Start-Service $ServiceName -ErrorAction SilentlyContinue
     Start-Sleep 2
@@ -479,10 +479,10 @@ Write-OK "Service set to auto-start (pre-login)"
 
 # ── Step 10: Firewall rules ────────────────────────────────────────────────────
 Write-Step "Configuring firewall..."
-Remove-NetFirewallRule -DisplayName "KiroAccess*" -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName "KiroAccess SSH In" `
+Remove-NetFirewallRule -DisplayName "Mass*" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Mass SSH In" `
     -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow | Out-Null
-New-NetFirewallRule -DisplayName "KiroAccess Relay Out" `
+New-NetFirewallRule -DisplayName "Mass Relay Out" `
     -Direction Outbound -Protocol TCP -RemotePort $RelayPort -Action Allow | Out-Null
 Write-OK "Firewall rules set"
 
@@ -534,9 +534,9 @@ Write-Host "    $PrivKeyPath" -ForegroundColor White
 Write-Host ""
 Write-Host "  Copy it to your laptop:" -ForegroundColor White
 Write-Host "    - Open the file above in Notepad, copy the contents" -ForegroundColor White
-Write-Host "    - On your laptop, save it as: ~/.ssh/id_kiro_${Label.Replace(' ','_')}" -ForegroundColor White
-Write-Host "    - Then SSH with: ssh -i ~/.ssh/id_kiro_${Label.Replace(' ','_')} Administrator@<ip>" -ForegroundColor White
-Write-Host "    - kiro-manager will use it automatically" -ForegroundColor White
+Write-Host "    - On your laptop, save it as: ~/.ssh/id_ms_${Label.Replace(' ','_')}" -ForegroundColor White
+Write-Host "    - Then SSH with: ssh -i ~/.ssh/id_ms_${Label.Replace(' ','_')} Administrator@<ip>" -ForegroundColor White
+Write-Host "    - msmgr will use it automatically" -ForegroundColor White
 Write-Host ""
 
 # Display the public key for reference
