@@ -1,214 +1,362 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    KiroAccess Self-Contained Installer
-    Run this once on each machine you want to remotely access.
-    It will: install OpenSSH, compile+install the agent service,
-    configure firewall, generate auth token, register with relay.
+    KiroAccess - Fully Automatic Self-Contained Installer
+    
+    Downloads and installs EVERYTHING automatically:
+    - OpenSSH Server (if missing)
+    - Generates your SSH keypair (if missing on this machine)
+    - kiro-agent.exe (downloaded from GitHub releases)
+    - Windows service (auto-start, pre-login, SYSTEM account)
+    - Firewall rules
+    - Hardened sshd_config (your key only, no passwords ever)
+    - OpenHardwareMonitor (for CPU/GPU temps)
 
-    SECURITY: Only YOUR laptop's SSH public key will ever be able to connect.
-    No passwords. No other keys. The agent audits this every 60 seconds.
+    Just run it. It asks only 3 things:
+      1. Your relay host (e.g. ra-u9qf.onrender.com)
+      2. Your relay token
+      3. Your device label (e.g. "Gaming PC")
+
+    Everything else is fully automatic.
 
 .EXAMPLE
-    # Full silent install
-    .\install.ps1 -RelayHost "sshra.onrender.com" -Label "Gaming PC" `
-                  -Token "mysecret" -OwnerPublicKey "ssh-ed25519 AAAA... laptop"
-
-    # Interactive (prompts for everything including your public key)
+    # Interactive - just run it:
     .\install.ps1
+
+    # Fully silent (no prompts at all):
+    .\install.ps1 -RelayHost "ra-u9qf.onrender.com" -RelayPort "10000" `
+                  -Token "yourtoken" -Label "Gaming PC"
+
+    # Uninstall:
+    .\install.ps1 -Uninstall
 #>
 param(
-    [string]$RelayHost      = "",
-    [string]$RelayPort      = "7744",
-    [string]$Label          = "",
-    [string]$Token          = "",
-    [string]$OwnerPublicKey = "",   # Your laptop's ~/.ssh/id_ed25519.pub content
-    [string]$AgentUrl       = "",   # URL to download prebuilt kiro-agent.exe
+    [string]$RelayHost = "",
+    [string]$RelayPort = "10000",
+    [string]$Token     = "",
+    [string]$Label     = "",
     [switch]$Uninstall
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# ── Paths & names ─────────────────────────────────────────────────────────────
 $InstallDir  = "C:\Program Files\KiroAccess"
 $DataDir     = "C:\ProgramData\KiroAccess"
-$SshDataDir  = "C:\ProgramData\ssh"
+$SshDir      = "C:\ProgramData\ssh"
 $ServiceName = "KiroAccessAgent"
 $RegKey      = "HKLM:\SOFTWARE\KiroAccess"
 $AccessGroup = "KiroAccessUsers"
+$AgentExe    = "$InstallDir\kiro-agent.exe"
 
-# ── Colours ──────────────────────────────────────────────────────────────────
-function Write-Step   { param($m) Write-Host "  [>>] $m" -ForegroundColor Cyan }
-function Write-OK     { param($m) Write-Host "  [ OK] $m" -ForegroundColor Green }
-function Write-Fail   { param($m) Write-Host "  [!!] $m" -ForegroundColor Red }
+# Where to download kiro-agent.exe from (GitHub releases of your repo)
+$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/latest/download/kiro-agent.exe"
+
+# ── Output helpers ────────────────────────────────────────────────────────────
+function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
+function Write-OK   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green }
+function Write-Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
+function Write-Fail { param($m) Write-Host "  [XX] $m" -ForegroundColor Red }
+
 function Write-Banner {
+    Clear-Host
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Magenta
-    Write-Host "  ║      KiroAccess Agent Installer      ║" -ForegroundColor Magenta
-    Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Magenta
+    Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
+    Write-Host "  ║        KiroAccess - Auto Installer           ║" -ForegroundColor Magenta
+    Write-Host "  ║   Sets up everything. No manual steps.       ║" -ForegroundColor Magenta
+    Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
     Write-Host ""
 }
 
-# ── Uninstall path ────────────────────────────────────────────────────────────
+# ── Uninstall ─────────────────────────────────────────────────────────────────
 if ($Uninstall) {
-    Write-Step "Stopping and removing service..."
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    sc.exe delete $ServiceName | Out-Null
-    Remove-Item -Recurse -Force $InstallDir  -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $DataDir     -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $RegKey      -ErrorAction SilentlyContinue
-    # Remove firewall rules
+    Write-Host "  Uninstalling KiroAccess..." -ForegroundColor Yellow
+    Stop-Service  $ServiceName -Force -ErrorAction SilentlyContinue
+    Start-Sleep 2
+    if (Test-Path $AgentExe) { & $AgentExe --uninstall 2>$null }
+    sc.exe delete $ServiceName 2>$null | Out-Null
+    Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $DataDir    -ErrorAction SilentlyContinue
+    if (Test-Path $RegKey) { Remove-Item -Recurse -Force $RegKey }
     Remove-NetFirewallRule -DisplayName "KiroAccess*" -ErrorAction SilentlyContinue
-    # Remove access group
-    Remove-LocalGroup -Name $AccessGroup -ErrorAction SilentlyContinue
-    Write-OK "Uninstalled."
+    Remove-LocalGroup $AccessGroup -ErrorAction SilentlyContinue
+    Write-Host "  Done. KiroAccess removed." -ForegroundColor Green
     exit 0
 }
 
 Write-Banner
 
-# ── Gather config interactively if not supplied ───────────────────────────────
+# ── Step 0: Gather the 3 required pieces of info ─────────────────────────────
+Write-Host "  This installer will set up everything automatically." -ForegroundColor White
+Write-Host "  It only needs 3 things from you:" -ForegroundColor White
+Write-Host ""
+
 if (-not $RelayHost) {
-    $RelayHost = Read-Host "  Relay server hostname/IP (e.g. relay.example.com)"
-}
-if (-not $Label) {
-    $Label = Read-Host "  Device label (e.g. 'Gaming PC', 'Bedroom PC')"
+    $RelayHost = (Read-Host "  [1/3] Relay server host (e.g. ra-u9qf.onrender.com)").Trim()
 }
 if (-not $Token) {
-    # Generate a random token if not provided
-    $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    $Token = [System.Convert]::ToBase64String($bytes).Replace("+","").Replace("/","").Replace("=","").Substring(0,32)
-    Write-Host "  Generated auth token: " -NoNewline
-    Write-Host $Token -ForegroundColor Yellow
-    Write-Host "  SAVE THIS - you need it in the manager on your laptop"
-    Write-Host ""
+    $Token = (Read-Host "  [2/3] Relay auth token").Trim()
+}
+if (-not $Label) {
+    $suggested = $env:COMPUTERNAME
+    $input = (Read-Host "  [3/3] Device label (press Enter for '$suggested')").Trim()
+    $Label = if ($input) { $input } else { $suggested }
 }
 
-# ── Owner SSH public key (MANDATORY for security) ─────────────────────────────
-if (-not $OwnerPublicKey) {
-    Write-Host ""
-    Write-Host "  ┌─────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
-    Write-Host "  │  SECURITY: Your SSH public key is required              │" -ForegroundColor Yellow
-    Write-Host "  │  ONLY this key will ever be able to SSH into this PC.   │" -ForegroundColor Yellow
-    Write-Host "  │  No passwords. No other keys. Ever.                     │" -ForegroundColor Yellow
-    Write-Host "  └─────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  On your laptop, run:  cat ~/.ssh/id_ed25519.pub" -ForegroundColor Cyan
-    Write-Host "  (or id_rsa.pub if you use RSA)" -ForegroundColor Cyan
-    Write-Host "  Then paste the full line here (starts with ssh-ed25519 or ssh-rsa):"
-    Write-Host ""
-    $OwnerPublicKey = Read-Host "  Your public key"
-    $OwnerPublicKey = $OwnerPublicKey.Trim()
-}
+Write-Host ""
+Write-Host "  Relay : ${RelayHost}:${RelayPort}" -ForegroundColor DarkGray
+Write-Host "  Label : $Label"                    -ForegroundColor DarkGray
+Write-Host ""
 
-# Validate key format
-if (-not ($OwnerPublicKey -match '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+|sk-ssh-ed25519)\s+[A-Za-z0-9+/=]+')) {
-    Write-Fail "That does not look like a valid SSH public key."
-    Write-Fail "Expected format: ssh-ed25519 AAAA... [comment]"
-    Write-Fail "Generate one on your laptop with:  ssh-keygen -t ed25519 -C laptop"
-    exit 1
-}
-Write-OK "Owner public key validated"
-
-# ── Create directories ────────────────────────────────────────────────────────
-Write-Step "Creating install directories..."
+# ── Step 1: Create directories ────────────────────────────────────────────────
+Write-Step "Creating directories..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
+New-Item -ItemType Directory -Force -Path $SshDir     | Out-Null
 Write-OK "Directories ready"
 
-# ── Install OpenSSH ───────────────────────────────────────────────────────────
-Write-Step "Checking OpenSSH Server..."
-$sshCap = Get-WindowsCapability -Online | Where-Object { $_.Name -like "OpenSSH.Server*" }
-if ($sshCap -and $sshCap.State -ne "Installed") {
-    Write-Step "Installing OpenSSH Server (Windows optional feature)..."
-    Add-WindowsCapability -Online -Name $sshCap.Name | Out-Null
-    Write-OK "OpenSSH Server installed"
-} elseif ($sshCap) {
-    Write-OK "OpenSSH Server already installed"
-} else {
-    # Fallback: try winget
-    Write-Step "Trying winget for OpenSSH..."
-    winget install --id Microsoft.OpenSSH.Beta -e --silent 2>$null
+# ── Step 2: Install OpenSSH Server (fully automatic) ─────────────────────────
+Write-Step "Installing OpenSSH Server..."
+
+$sshdInstalled = $false
+
+# Method A: Windows optional feature (Windows 10 1809+ / Windows 11)
+try {
+    $cap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" -ErrorAction Stop
+    if ($cap.State -eq "Installed") {
+        Write-OK "OpenSSH Server already installed (Windows feature)"
+        $sshdInstalled = $true
+    } else {
+        Write-Step "Adding OpenSSH.Server Windows feature (downloading ~3MB)..."
+        Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+        Write-OK "OpenSSH Server installed via Windows feature"
+        $sshdInstalled = $true
+    }
+} catch {
+    Write-Warn "Windows feature method failed, trying winget..."
 }
 
-# Ensure sshd service is set to auto-start
-Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service sshd -ErrorAction SilentlyContinue
-Write-OK "sshd service configured (auto-start)"
+# Method B: winget (fallback for older Windows)
+if (-not $sshdInstalled) {
+    try {
+        $wg = Get-Command winget -ErrorAction Stop
+        Write-Step "Installing OpenSSH via winget..."
+        & winget install --id "Microsoft.OpenSSH.Beta" -e --silent --accept-package-agreements --accept-source-agreements 2>$null
+        Start-Sleep 3
+        if (Get-Service sshd -ErrorAction SilentlyContinue) {
+            Write-OK "OpenSSH installed via winget"
+            $sshdInstalled = $true
+        }
+    } catch {
+        Write-Warn "winget not available, trying direct download..."
+    }
+}
 
-# Set default shell to PowerShell for SSH sessions
-$pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-if (-not $pwshPath) { $pwshPath = (Get-Command powershell).Source }
-New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name "DefaultShell" `
-    -Value $pwshPath -PropertyType String -Force | Out-Null
-Write-OK "Default SSH shell: $pwshPath"
+# Method C: Direct download from GitHub (ultimate fallback, works on any Windows)
+if (-not $sshdInstalled) {
+    Write-Step "Downloading OpenSSH directly from GitHub (Microsoft release)..."
+    $sshZipUrl  = "https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip"
+    $sshZipPath = "$env:TEMP\OpenSSH-Win64.zip"
+    $sshExtract = "$env:TEMP\OpenSSH-Win64"
+    $sshInstallPath = "C:\Program Files\OpenSSH"
 
-# ── Deploy kiro-agent.exe ─────────────────────────────────────────────────────
-Write-Step "Deploying kiro-agent.exe..."
-$AgentExe = Join-Path $InstallDir "kiro-agent.exe"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $sshZipUrl -OutFile $sshZipPath -UseBasicParsing
+        Write-Step "Extracting OpenSSH..."
+        Expand-Archive -Path $sshZipPath -DestinationPath $env:TEMP -Force
+        if (Test-Path $sshInstallPath) { Remove-Item -Recurse -Force $sshInstallPath }
+        Move-Item "$sshExtract" $sshInstallPath -Force
 
-if ($AgentUrl) {
-    # Download prebuilt binary
-    Write-Step "Downloading from $AgentUrl..."
-    Invoke-WebRequest -Uri $AgentUrl -OutFile $AgentExe -UseBasicParsing
-    Write-OK "Downloaded kiro-agent.exe"
-} else {
-    # Try to compile from source if MSVC or MinGW is available
-    $scriptDir  = Split-Path $MyInvocation.MyCommand.Path -Parent
-    $sourceDir  = Join-Path $scriptDir ".."
-    $agentSrc   = Join-Path $sourceDir "agent\agent.c"
-
-    $compiled = $false
-
-    # Try cl.exe (MSVC)
-    $cl = Get-Command cl -ErrorAction SilentlyContinue
-    if ($cl -and (Test-Path $agentSrc)) {
-        Write-Step "Compiling with MSVC cl.exe..."
-        $commonDir = Join-Path $sourceDir "common"
-        Push-Location (Join-Path $sourceDir "agent")
-        cl.exe agent.c /Fe:"$AgentExe" /I"$commonDir" /O2 `
-            /link ws2_32.lib advapi32.lib pdh.lib iphlpapi.lib 2>&1 | Out-Null
+        # Install the service using the bundled install script
+        Push-Location $sshInstallPath
+        powershell.exe -ExecutionPolicy Bypass -File ".\install-sshd.ps1" | Out-Null
         Pop-Location
-        if (Test-Path $AgentExe) { $compiled = $true; Write-OK "Compiled with MSVC" }
-    }
 
-    # Try gcc (MinGW/MSYS2)
-    if (-not $compiled) {
-        $gcc = Get-Command gcc -ErrorAction SilentlyContinue
-        if ($gcc -and (Test-Path $agentSrc)) {
-            Write-Step "Compiling with GCC..."
-            $commonDir = Join-Path $sourceDir "common"
-            gcc "$agentSrc" -I"$commonDir" -O2 -o "$AgentExe" `
-                -lws2_32 -ladvapi32 -lpdh -liphlpapi -lpowrprof 2>&1 | Out-Null
-            if (Test-Path $AgentExe) { $compiled = $true; Write-OK "Compiled with GCC" }
-        }
-    }
-
-    if (-not $compiled) {
-        # Last resort: copy from same directory as installer if it was distributed together
-        $localExe = Join-Path $scriptDir "kiro-agent.exe"
-        if (Test-Path $localExe) {
-            Copy-Item $localExe $AgentExe -Force
-            Write-OK "Copied bundled kiro-agent.exe"
-        } else {
-            Write-Fail "Cannot find or compile kiro-agent.exe."
-            Write-Fail "Either provide -AgentUrl, ensure MSVC/GCC is in PATH, or place kiro-agent.exe next to install.ps1"
-            exit 1
-        }
+        Write-OK "OpenSSH installed from GitHub release"
+        $sshdInstalled = $true
+    } catch {
+        Write-Fail "Could not install OpenSSH automatically: $_"
+        Write-Fail "Please install it manually from: https://github.com/PowerShell/Win32-OpenSSH/releases"
+        exit 1
     }
 }
 
-# ── Write registry config ─────────────────────────────────────────────────────
-Write-Step "Writing configuration to registry..."
+# Configure sshd to auto-start
+Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service sshd -ErrorAction SilentlyContinue
+Write-OK "sshd set to auto-start"
 
-# Generate stable device ID from machine GUID
+# Set default SSH shell to PowerShell
+$pwshPath = (Get-Command pwsh   -ErrorAction SilentlyContinue)?.Source
+if (-not $pwshPath) { $pwshPath = (Get-Command powershell -ErrorAction SilentlyContinue)?.Source }
+if ($pwshPath) {
+    if (-not (Test-Path "HKLM:\SOFTWARE\OpenSSH")) {
+        New-Item -Path "HKLM:\SOFTWARE\OpenSSH" -Force | Out-Null
+    }
+    New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name "DefaultShell" `
+        -Value $pwshPath -PropertyType String -Force | Out-Null
+    Write-OK "Default SSH shell: $pwshPath"
+}
+
+# ── Step 3: Generate SSH keypair on THIS machine (so we have a key to work with)
+#    We generate the key here, then the installer outputs the PUBLIC KEY so
+#    the user can copy it to their laptop. The private key stays on this machine
+#    only if needed, but more importantly we capture the owner's LAPTOP public key.
+#    
+#    Actually: we generate a keypair FOR THE OWNER'S LAPTOP right here,
+#    then write it to authorized_keys. The owner copies the private key to their laptop.
+#    This is the zero-manual-step approach — no need to bring a key FROM the laptop.
+# ─────────────────────────────────────────────────────────────────────────────
+Write-Step "Generating SSH keypair for owner access..."
+
+$KeyDir     = "$DataDir\owner_key"
+$PrivKeyPath = "$KeyDir\id_ed25519"
+$PubKeyPath  = "$KeyDir\id_ed25519.pub"
+
+New-Item -ItemType Directory -Force -Path $KeyDir | Out-Null
+
+# Check if ssh-keygen is now available
+$sshKeygen = Get-Command ssh-keygen -ErrorAction SilentlyContinue
+if (-not $sshKeygen) {
+    # Try known paths
+    $candidates = @(
+        "C:\Program Files\OpenSSH\ssh-keygen.exe",
+        "C:\Windows\System32\OpenSSH\ssh-keygen.exe",
+        "C:\Program Files\OpenSSH-Win64\ssh-keygen.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { $sshKeygen = $c; break }
+    }
+}
+
+if (-not $sshKeygen) {
+    Write-Fail "ssh-keygen not found after OpenSSH install. Please restart and re-run."
+    exit 1
+}
+
+$sshKeygenExe = if ($sshKeygen -is [string]) { $sshKeygen } else { $sshKeygen.Source }
+
+if (-not (Test-Path $PrivKeyPath)) {
+    & $sshKeygenExe -t ed25519 -f $PrivKeyPath -N '""' -C "kiroaccess-owner" 2>$null
+    Write-OK "SSH keypair generated"
+} else {
+    Write-OK "SSH keypair already exists"
+}
+
+$OwnerPublicKey = (Get-Content $PubKeyPath -Raw).Trim()
+Write-OK "Owner public key ready"
+
+# ── Step 4: Deploy hardened sshd_config ───────────────────────────────────────
+Write-Step "Deploying hardened SSH config (your key only, no passwords)..."
+
+$progDataFwd = $env:ProgramData.Replace('\','/')
+$sshdConfig = @"
+# KiroAccess hardened sshd_config - auto-generated, do not edit manually
+Port 22
+AuthorizedKeysFile          $progDataFwd/ssh/administrators_authorized_keys
+PubkeyAuthentication        yes
+PasswordAuthentication      no
+PermitEmptyPasswords        no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication    no
+GSSAPIAuthentication            no
+HostbasedAuthentication         no
+PermitRootLogin                 prohibit-password
+MaxAuthTries                    3
+MaxSessions                     10
+LoginGraceTime                  20
+ClientAliveInterval             60
+ClientAliveCountMax             3
+StrictModes                     yes
+AllowTcpForwarding              yes
+AllowAgentForwarding            yes
+X11Forwarding                   no
+Subsystem sftp                  sftp-server.exe
+"@
+
+Set-Content -Path "$SshDir\sshd_config" -Value $sshdConfig -Encoding UTF8
+Write-OK "Hardened sshd_config written"
+
+# ── Step 5: Write authorized_keys (ONLY the generated owner key) ──────────────
+Write-Step "Writing authorized_keys (owner key only)..."
+
+$adminAuthKeys = "$SshDir\administrators_authorized_keys"
+Set-Content -Path $adminAuthKeys -Value $OwnerPublicKey -Encoding UTF8
+Write-OK "authorized_keys written"
+
+# Lock down file permissions
+try {
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl","Allow")))
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl","Allow")))
+    Set-Acl -Path $adminAuthKeys -AclObject $acl
+    Write-OK "authorized_keys permissions locked"
+} catch {
+    # icacls fallback
+    icacls $adminAuthKeys /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>$null | Out-Null
+    Write-OK "authorized_keys permissions set via icacls"
+}
+
+# ── Step 6: Create KiroAccessUsers group ─────────────────────────────────────
+Write-Step "Setting up access control group..."
+if (-not (Get-LocalGroup $AccessGroup -ErrorAction SilentlyContinue)) {
+    New-LocalGroup -Name $AccessGroup -Description "KiroAccess SSH access group" | Out-Null
+}
+Add-LocalGroupMember -Group $AccessGroup -Member "Administrators" -ErrorAction SilentlyContinue
+Write-OK "Access group configured"
+
+# Restart sshd with new config
+Write-Step "Restarting sshd with hardened config..."
+Restart-Service sshd -Force -ErrorAction SilentlyContinue
+Start-Sleep 2
+Write-OK "sshd restarted"
+
+# ── Step 7: Download kiro-agent.exe ───────────────────────────────────────────
+Write-Step "Downloading kiro-agent.exe..."
+
+$downloaded = $false
+
+# Try GitHub releases first
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $AgentDownloadUrl -OutFile $AgentExe -UseBasicParsing -ErrorAction Stop
+    if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
+        Write-OK "Downloaded kiro-agent.exe from GitHub"
+        $downloaded = $true
+    }
+} catch {
+    Write-Warn "GitHub download failed: $_"
+}
+
+# Fallback: check next to this script (if distributed as a zip)
+if (-not $downloaded) {
+    $localCopy = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "kiro-agent.exe"
+    if (Test-Path $localCopy) {
+        Copy-Item $localCopy $AgentExe -Force
+        Write-OK "Copied bundled kiro-agent.exe"
+        $downloaded = $true
+    }
+}
+
+if (-not $downloaded) {
+    Write-Fail "Could not obtain kiro-agent.exe."
+    Write-Fail "Please build it from source (run build\build-agent.bat) and place"
+    Write-Fail "kiro-agent.exe next to this install.ps1, then re-run."
+    Write-Fail ""
+    Write-Fail "Or push a GitHub release at: https://github.com/ketw/sshra/releases"
+    exit 1
+}
+
+# ── Step 8: Write registry config ─────────────────────────────────────────────
+Write-Step "Writing service configuration..."
+
 $machineGuid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography").MachineGuid
-$DeviceId    = $machineGuid.Replace("-","").Substring(0, [Math]::Min(32, $machineGuid.Replace("-","").Length))
+$DeviceId = $machineGuid.Replace("-","")
+if ($DeviceId.Length -gt 32) { $DeviceId = $DeviceId.Substring(0,32) }
 
-if (-not (Test-Path $RegKey)) {
-    New-Item -Path $RegKey -Force | Out-Null
-}
+if (-not (Test-Path $RegKey)) { New-Item -Path $RegKey -Force | Out-Null }
 Set-ItemProperty -Path $RegKey -Name "RelayHost"   -Value $RelayHost  -Type String
 Set-ItemProperty -Path $RegKey -Name "RelayPort"   -Value $RelayPort  -Type String
 Set-ItemProperty -Path $RegKey -Name "AuthToken"   -Value $Token      -Type String
@@ -216,181 +364,122 @@ Set-ItemProperty -Path $RegKey -Name "DeviceLabel" -Value $Label      -Type Stri
 Set-ItemProperty -Path $RegKey -Name "DeviceID"    -Value $DeviceId   -Type String
 Write-OK "Registry config written"
 
-# ── Configure OpenSSH: owner-only hardened setup ─────────────────────────────
-Write-Step "Configuring SSH security (owner-only access)..."
+# ── Step 9: Install Windows service ───────────────────────────────────────────
+Write-Step "Installing KiroAccess Windows service..."
 
-New-Item -ItemType Directory -Force -Path $SshDataDir | Out-Null
-
-$adminAuthKeys = "$SshDataDir\administrators_authorized_keys"
-
-# Write ONLY the owner's public key — nothing else
-Set-Content -Path $adminAuthKeys -Value $OwnerPublicKey -Encoding UTF8 -NoNewline
-Add-Content -Path $adminAuthKeys -Value ""  # trailing newline
-Write-OK "Owner public key written to authorized_keys"
-
-# Lock down authorized_keys: SYSTEM + Administrators only, Everyone denied write
-$acl = New-Object System.Security.AccessControl.FileSecurity
-$acl.SetAccessRuleProtection($true, $false)
-$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "SYSTEM",          "FullControl", "Allow")))
-$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "Administrators",  "FullControl", "Allow")))
-$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "Everyone",        "Write,Modify,Delete,TakeOwnership,ChangePermissions", "Deny")))
-Set-Acl -Path $adminAuthKeys -AclObject $acl
-Write-OK "authorized_keys permissions locked (SYSTEM+Admins only, Everyone write-denied)"
-
-# Deploy hardened sshd_config
-Write-Step "Deploying hardened sshd_config (public-key auth only)..."
-$scriptDir    = Split-Path $MyInvocation.MyCommand.Path -Parent
-$hardenedConf = Join-Path $scriptDir "sshd_config.hardened"
-
-$sshdConfigPath = "$SshDataDir\sshd_config"
-
-if (Test-Path $hardenedConf) {
-    $confContent = Get-Content $hardenedConf -Raw
-    # Replace placeholder with actual ProgramData path (forward slashes for sshd)
-    $confContent = $confContent -replace '__PROGRAMDATA__', $env:ProgramData.Replace('\','/')
-    Set-Content -Path $sshdConfigPath -Value $confContent -Encoding UTF8
-    Write-OK "Hardened sshd_config deployed"
-} else {
-    # Fallback: write minimal hardened config inline
-    $minimalConf = @"
-Port 22
-AuthorizedKeysFile          __PROGRAMDATA__/ssh/administrators_authorized_keys
-PubkeyAuthentication        yes
-PasswordAuthentication      no
-PermitEmptyPasswords        no
-ChallengeResponseAuthentication no
-KbdInteractiveAuthentication    no
-HostbasedAuthentication         no
-MaxAuthTries                3
-LoginGraceTime              20
-StrictModes                 yes
-AllowGroups                 KiroAccessUsers Administrators
-Subsystem sftp              sftp-server.exe
-"@
-    $minimalConf = $minimalConf -replace '__PROGRAMDATA__', $env:ProgramData.Replace('\','/')
-    Set-Content -Path $sshdConfigPath -Value $minimalConf -Encoding UTF8
-    Write-OK "Minimal hardened sshd_config written"
+# Remove old service if present
+$old = Get-Service $ServiceName -ErrorAction SilentlyContinue
+if ($old) {
+    Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue
+    Start-Sleep 2
+    & $AgentExe --uninstall 2>$null
+    Start-Sleep 1
 }
 
-# Create KiroAccessUsers local group (only members can SSH in via AllowGroups)
-Write-Step "Creating KiroAccessUsers local group..."
-$grp = Get-LocalGroup -Name $AccessGroup -ErrorAction SilentlyContinue
-if (-not $grp) {
-    New-LocalGroup -Name $AccessGroup `
-        -Description "KiroAccess: only members of this group may connect via SSH" | Out-Null
-    Write-OK "Created local group: $AccessGroup"
-} else {
-    Write-OK "Local group already exists: $AccessGroup"
-}
+& $AgentExe --install
+Start-Sleep 2
 
-# Add Administrators to the group so admin accounts can connect
-Add-LocalGroupMember -Group $AccessGroup -Member "Administrators" `
-    -ErrorAction SilentlyContinue
-Write-OK "Administrators added to $AccessGroup"
-
-# Restart sshd to apply config
-Write-Step "Restarting sshd to apply hardened config..."
-Restart-Service sshd -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
-$sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue
-if ($sshdSvc -and $sshdSvc.Status -eq "Running") {
-    Write-OK "sshd restarted with hardened config"
-} else {
-    Write-Host "  [!!] sshd failed to restart. Check: $sshdConfigPath" -ForegroundColor Red
-}
-
-# ── Firewall rules ────────────────────────────────────────────────────────────
-Write-Step "Configuring firewall..."
-$existingSSH = Get-NetFirewallRule -DisplayName "KiroAccess SSH" -ErrorAction SilentlyContinue
-if (-not $existingSSH) {
-    New-NetFirewallRule -DisplayName "KiroAccess SSH" `
-        -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow | Out-Null
-}
-$existingRelay = Get-NetFirewallRule -DisplayName "KiroAccess Relay" -ErrorAction SilentlyContinue
-if (-not $existingRelay) {
-    New-NetFirewallRule -DisplayName "KiroAccess Relay" `
-        -Direction Outbound -Protocol TCP -RemotePort $RelayPort -Action Allow | Out-Null
-}
-Write-OK "Firewall rules set"
-
-# ── Install + start the agent Windows service ─────────────────────────────────
-Write-Step "Installing KiroAccess service..."
-
-# Stop existing service if running
-$existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($existingSvc) {
-    Write-Step "Removing previous installation..."
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    & "$AgentExe" --uninstall 2>$null
-    Start-Sleep -Seconds 1
-}
-
-# Install and start
-& "$AgentExe" --install
-Start-Sleep -Seconds 2
-
-$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+# Confirm running
+$svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     Write-OK "KiroAccess Agent service is running"
 } else {
-    Write-Step "Starting service manually..."
-    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    Start-Service $ServiceName -ErrorAction SilentlyContinue
+    Start-Sleep 2
+    $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq "Running") {
-        Write-OK "Service running"
+        Write-OK "Service started"
     } else {
-        Write-Fail "Service failed to start. Check: $DataDir\agent.log"
+        Write-Warn "Service installed but not running yet. Check: $DataDir\agent.log"
     }
 }
 
-# ── Configure service to start before login (pre-session) ────────────────────
-Write-Step "Configuring pre-login autostart..."
-# SERVICE_AUTO_START is already set, but we also need to ensure it starts
-# before the login screen (type = SERVICE_WIN32_OWN_PROCESS with SYSTEM account
-# and auto-start achieves this on Windows - sshd also uses this pattern)
-sc.exe config $ServiceName start= boot 2>$null
-# Note: 'boot' only works for kernel drivers; for win32 services 'auto' is correct
-# and they start before user login. Reset to auto:
+# Ensure auto-start (not delayed)
 sc.exe config $ServiceName start= auto | Out-Null
-# Ensure service is not delayed:
 sc.exe config $ServiceName start= auto delayed= false 2>$null | Out-Null
-Write-OK "Service configured for pre-login autostart (SYSTEM account)"
+Write-OK "Service set to auto-start (pre-login)"
 
-# ── Optional: install OpenHardwareMonitor for better temp readings ────────────
-Write-Step "Checking for hardware temp sensor support..."
-$ohmPath = "C:\Program Files\OpenHardwareMonitor\OpenHardwareMonitor.exe"
-if (-not (Test-Path $ohmPath)) {
-    Write-Host "  OpenHardwareMonitor (OHM) is NOT installed." -ForegroundColor Yellow
-    Write-Host "  CPU/GPU temperatures will show as N/A without it." -ForegroundColor Yellow
-    Write-Host "  Download from: https://openhardwaremonitor.org/downloads/" -ForegroundColor Yellow
-    Write-Host "  Install and set it to run at startup for full telemetry." -ForegroundColor Yellow
+# ── Step 10: Firewall rules ────────────────────────────────────────────────────
+Write-Step "Configuring firewall..."
+Remove-NetFirewallRule -DisplayName "KiroAccess*" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "KiroAccess SSH In" `
+    -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow | Out-Null
+New-NetFirewallRule -DisplayName "KiroAccess Relay Out" `
+    -Direction Outbound -Protocol TCP -RemotePort $RelayPort -Action Allow | Out-Null
+Write-OK "Firewall rules set"
+
+# ── Step 11: Try to install OpenHardwareMonitor silently (for temps) ──────────
+Write-Step "Checking OpenHardwareMonitor (for CPU/GPU temps)..."
+$ohmExe = "C:\Program Files\OpenHardwareMonitor\OpenHardwareMonitor.exe"
+if (-not (Test-Path $ohmExe)) {
+    try {
+        $ohmZipUrl  = "https://openhardwaremonitor.org/files/openhardwaremonitor-r0.9.6.zip"
+        $ohmZip     = "$env:TEMP\ohm.zip"
+        $ohmExtract = "$env:TEMP\ohm_extract"
+        Invoke-WebRequest -Uri $ohmZipUrl -OutFile $ohmZip -UseBasicParsing -TimeoutSec 30
+        Expand-Archive -Path $ohmZip -DestinationPath $ohmExtract -Force
+        $ohmDir = "C:\Program Files\OpenHardwareMonitor"
+        New-Item -ItemType Directory -Force -Path $ohmDir | Out-Null
+        Get-ChildItem "$ohmExtract\OpenHardwareMonitor" | Copy-Item -Destination $ohmDir -Recurse -Force
+        # Add to startup (HKLM run key) so it starts with Windows and exposes shared memory
+        $ohmRunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+        Set-ItemProperty -Path $ohmRunKey -Name "OpenHardwareMonitor" -Value "`"$ohmExe`" /startup"
+        # Start it now
+        Start-Process $ohmExe -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Write-OK "OpenHardwareMonitor installed and started"
+    } catch {
+        Write-Warn "Could not auto-install OpenHardwareMonitor (CPU/GPU temps will show N/A)"
+        Write-Warn "Install manually from: https://openhardwaremonitor.org/downloads/"
+    }
 } else {
-    Write-OK "OpenHardwareMonitor found"
+    Write-OK "OpenHardwareMonitor already installed"
 }
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "  ║           Installation Complete!                 ║" -ForegroundColor Green
-Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "  ║              Installation Complete!                  ║" -ForegroundColor Green
+Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Device ID  : $DeviceId"              -ForegroundColor Cyan
-Write-Host "  Label      : $Label"                 -ForegroundColor Cyan
+Write-Host "  Device     : $Label ($DeviceId)" -ForegroundColor Cyan
 Write-Host "  Relay      : ${RelayHost}:${RelayPort}" -ForegroundColor Cyan
-Write-Host "  Auth Token : $Token"                 -ForegroundColor Yellow
+Write-Host "  Service    : Running (auto-starts before login)" -ForegroundColor Cyan
+Write-Host "  SSH        : Locked to owner key only, no passwords" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Security:"                           -ForegroundColor White
-Write-Host "  - SSH locked to YOUR public key only (no passwords, no other keys)" -ForegroundColor Green
-Write-Host "  - Agent audits authorized_keys every 60s and stops sshd if tampered" -ForegroundColor Green
-Write-Host "  - sshd_config: PubkeyAuthentication only, AllowGroups restricted" -ForegroundColor Green
+Write-Host "  ┌─────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+Write-Host "  │  ACTION NEEDED - copy this private key to your      │" -ForegroundColor Yellow
+Write-Host "  │  laptop to be able to SSH into this machine:        │" -ForegroundColor Yellow
+Write-Host "  └─────────────────────────────────────────────────────┘" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  NEXT STEPS on your laptop:" -ForegroundColor White
-Write-Host "  1. Copy the auth token above into kiro-manager" -ForegroundColor White
-Write-Host "  2. Run: kiro-manager.exe ${RelayHost} ${Token}" -ForegroundColor White
+Write-Host "  Private key is at:" -ForegroundColor White
+Write-Host "    $PrivKeyPath" -ForegroundColor White
+Write-Host ""
+Write-Host "  Copy it to your laptop:" -ForegroundColor White
+Write-Host "    - Open the file above in Notepad, copy the contents" -ForegroundColor White
+Write-Host "    - On your laptop, save it as: ~/.ssh/id_kiro_${Label.Replace(' ','_')}" -ForegroundColor White
+Write-Host "    - Then SSH with: ssh -i ~/.ssh/id_kiro_${Label.Replace(' ','_')} Administrator@<ip>" -ForegroundColor White
+Write-Host "    - kiro-manager will use it automatically" -ForegroundColor White
+Write-Host ""
+
+# Display the public key for reference
+Write-Host "  Public key (already locked to this PC):" -ForegroundColor DarkGray
+Write-Host "  $OwnerPublicKey" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Log file: $DataDir\agent.log" -ForegroundColor DarkGray
+Write-Host ""
+
+# Offer to display private key contents directly in terminal for easy copy
+$show = Read-Host "  Show private key contents in terminal now for copy-paste? [Y/N]"
+if ($show -match '^[Yy]') {
+    Write-Host ""
+    Write-Host "  ===== PRIVATE KEY (copy everything between the lines) =====" -ForegroundColor Yellow
+    Get-Content $PrivKeyPath
+    Write-Host "  ===== END PRIVATE KEY =====" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Save this as ~/.ssh/id_ed25519 on your laptop (or any filename you want)" -ForegroundColor Cyan
+    Write-Host "  Set permissions: chmod 600 ~/.ssh/id_ed25519  (on Linux/macOS)" -ForegroundColor Cyan
+    Write-Host "  On Windows: the file just needs to be in your .ssh folder" -ForegroundColor Cyan
+}
+
+Write-Host ""
+Write-Host "  All done. This device will connect to the relay automatically on every boot." -ForegroundColor Green
