@@ -27,27 +27,50 @@ $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 
 if (-not $isAdmin) {
     Write-Host "  Not running as Administrator. Re-launching elevated..." -ForegroundColor Yellow
-    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass")
-    # If we were piped (no script file), download to temp and re-run
-    if ($MyInvocation.MyCommand.Path) {
-        $argList += "-File", "`"$($MyInvocation.MyCommand.Path)`""
-        if ($RelayHost) { $argList += "-RelayHost", "`"$RelayHost`"" }
-        if ($RelayPort) { $argList += "-RelayPort", "`"$RelayPort`"" }
-        if ($Token)     { $argList += "-Token",     "`"$Token`"" }
-        if ($Label)     { $argList += "-Label",     "`"$Label`"" }
-        if ($Uninstall) { $argList += "-Uninstall" }
-    } else {
-        # Running via iex pipe — download script to temp and run it elevated
-        $tmpScript = "$env:TEMP\kiro_install.ps1"
+    # Always download fresh copy to temp — works whether run via iex or as a file
+    $tmpScript = "$env:TEMP\kiro_install.ps1"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest "https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1" `
-            -OutFile $tmpScript -UseBasicParsing
-        $argList += "-File", "`"$tmpScript`""
+            -OutFile $tmpScript -UseBasicParsing -ErrorAction Stop
+    } catch {
+        # If download fails, copy self if we have a path
+        if ($MyInvocation.MyCommand.Path) {
+            Copy-Item $MyInvocation.MyCommand.Path $tmpScript -Force
+        } else {
+            Write-Host "  ERROR: Could not prepare installer for elevation." -ForegroundColor Red
+            pause; exit 1
+        }
     }
-    Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+
+    # Build argument string — pass any params the user already gave
+    $params = ""
+    if ($RelayHost) { $params += " -RelayHost `"$RelayHost`"" }
+    if ($RelayPort) { $params += " -RelayPort `"$RelayPort`"" }
+    if ($Token)     { $params += " -Token `"$Token`"" }
+    if ($Label)     { $params += " -Label `"$Label`"" }
+    if ($Uninstall) { $params += " -Uninstall" }
+
+    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$tmpScript`"$params"
+
+    Start-Process powershell -Verb RunAs -ArgumentList $argList
+    # Do NOT use -Wait here — just launch and exit this non-admin instance
     exit 0
 }
 
 $ErrorActionPreference = "Stop"
+
+# Wrap everything in try/catch so the window never silently closes on error
+trap {
+    Write-Host ""
+    Write-Host "  ================================================================" -ForegroundColor Red
+    Write-Host "  ERROR: $_" -ForegroundColor Red
+    Write-Host "  ================================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 30 }
+    exit 1
+}
 
 # ── Paths & names ─────────────────────────────────────────────────────────────
 $InstallDir  = "C:\Program Files\KiroAccess"
@@ -499,3 +522,6 @@ if ($show -match '^[Yy]') {
 
 Write-Host ""
 Write-Host "  All done. This device will connect to the relay automatically on every boot." -ForegroundColor Green
+Write-Host ""
+Write-Host "  Press any key to close this window..." -ForegroundColor DarkGray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
