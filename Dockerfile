@@ -10,11 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY common/ ./common/
-COPY relay/relay.c ./relay/
+COPY relay/msrelay.c ./relay/msrelay.c
 
-RUN gcc relay/relay.c \
+RUN gcc relay/msrelay.c \
     -I./common \
-    -O2 -Wall \
+    -O2 -Wall -Wno-stringop-truncation \
     -D_GNU_SOURCE \
     -lpthread \
     -o msrelay

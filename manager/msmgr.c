@@ -39,6 +39,7 @@
 
 #include "..\common\protocol.h"
 #include "..\common\json_util.h"
+#include "..\common\ws.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -358,61 +359,73 @@ static void ui_draw(void) {
 }
 
 /* ============================================================
- * NETWORKING: relay client
+ * NETWORKING: WebSocket relay client
+ * Connects to port 443 (Render's public HTTPS port).
+ * Render terminates TLS at its edge and forwards plain WS bytes to container.
+ * Cold-start: polls GET /health until 200 before upgrading to WebSocket.
  * ============================================================ */
 
 static int net_send_msg(SOCKET s, const char *payload) {
-    uint32_t len = (uint32_t)strlen(payload);
-    uint32_t wl  = htonl(len);
-    char hdr[4]; memcpy(hdr, &wl, 4);
-    if (send(s, hdr, 4, 0) != 4) return -1;
-    int sent = 0;
-    while (sent < (int)len) {
-        int n = send(s, payload + sent, (int)len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
-    }
-    return 0;
+    return ws_send_msg((ws_sock_t)s, payload, 1 /* client = masked */);
 }
 
 static char *net_recv_msg(SOCKET s) {
-    char hdr[4]; int got = 0;
-    while (got < 4) {
-        int n = recv(s, hdr + got, 4 - got, 0);
-        if (n <= 0) return NULL;
-        got += n;
-    }
-    uint32_t len; memcpy(&len, hdr, 4); len = ntohl(len);
-    if (len == 0 || len > MAX_MSG_SIZE) return NULL;
-    char *buf = malloc(len + 1);
-    if (!buf) return NULL;
-    got = 0;
-    while (got < (int)len) {
-        int n = recv(s, buf + got, (int)len - got, 0);
-        if (n <= 0) { free(buf); return NULL; }
-        got += n;
-    }
-    buf[len] = '\0';
-    return buf;
+    return ws_recv_msg((ws_sock_t)s);
 }
 
+/* Wake up Render free-tier — polls /health until the service responds */
+static void relay_wakeup(const char *host) {
+    char req[512];
+    snprintf(req, sizeof(req),
+        "GET /health HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", host);
+
+    for (int attempt = 1; attempt <= 30 && g_running; attempt++) {
+        /* Try port 80 first (Render redirects), then 443 */
+        const char *ports[] = {"80", "443", NULL};
+        int awake = 0;
+        for (int pi = 0; ports[pi] && !awake; pi++) {
+            struct addrinfo hints, *res;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(host, ports[pi], &hints, &res) != 0) continue;
+            SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            if (s != INVALID_SOCKET) {
+                DWORD tv = 5000;
+                setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv));
+                setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char*)&tv, sizeof(tv));
+                if (connect(s, res->ai_addr, (int)res->ai_addrlen) == 0) {
+                    send(s, req, (int)strlen(req), 0);
+                    char resp[256] = {0};
+                    recv(s, resp, sizeof(resp)-1, 0);
+                    if (strstr(resp, "200") || strstr(resp, "301") || strstr(resp, "101"))
+                        awake = 1;
+                }
+                closesocket(s);
+            }
+            freeaddrinfo(res);
+        }
+        if (awake) return;
+        if (attempt < 30) Sleep(3000);
+    }
+}
+
+/* Connect to relay on port 443 and perform WebSocket upgrade */
 static SOCKET relay_connect_and_auth(relay_cfg_t *cfg) {
+    /* Wake up the Render free-tier service if it spun down */
+    relay_wakeup(cfg->host);
+    if (!g_running) return INVALID_SOCKET;
+
+    /* TCP connect to port 443 */
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    /* Manager connects to the SAME port as agents (single-port relay for Render.com) */
-    char mgr_port[16];
-    strncpy(mgr_port, cfg->port, sizeof(mgr_port)-1);
-
-    if (getaddrinfo(cfg->host, mgr_port, &hints, &res) != 0) return INVALID_SOCKET;
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(cfg->host, "443", &hints, &res) != 0) return INVALID_SOCKET;
 
     SOCKET s = INVALID_SOCKET;
     for (rp = res; rp; rp = rp->ai_next) {
         s = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (s == INVALID_SOCKET) continue;
-        DWORD tv = 8000;
+        DWORD tv = 15000;
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv));
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (char*)&tv, sizeof(tv));
         if (connect(s, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
@@ -421,7 +434,12 @@ static SOCKET relay_connect_and_auth(relay_cfg_t *cfg) {
     freeaddrinfo(res);
     if (s == INVALID_SOCKET) return INVALID_SOCKET;
 
-    /* Send auth */
+    /* WebSocket handshake */
+    if (ws_client_handshake((ws_sock_t)s, cfg->host, "/ms") != 0) {
+        closesocket(s); return INVALID_SOCKET;
+    }
+
+    /* Send auth message */
     char buf[512];
     json_builder_t jb; jb_init(&jb, buf, sizeof(buf));
     jb_begin(&jb);
@@ -431,6 +449,7 @@ static SOCKET relay_connect_and_auth(relay_cfg_t *cfg) {
     jb_end(&jb);
     if (net_send_msg(s, buf) != 0) { closesocket(s); return INVALID_SOCKET; }
 
+    /* Expect auth_ok */
     char *resp = net_recv_msg(s);
     if (!resp) { closesocket(s); return INVALID_SOCKET; }
     char type[32];
@@ -521,8 +540,8 @@ static DWORD WINAPI relay_poll_thread(LPVOID arg) {
     while (g_running) {
         SOCKET s = relay_connect_and_auth(cfg);
         if (s == INVALID_SOCKET) {
-            /* retry after interval */
-            for (int i = 0; i < 60 && g_running; i++) Sleep(500);
+            /* back-off before retry */
+            for (int i = 0; i < 20 && g_running; i++) Sleep(500);
             continue;
         }
 
@@ -889,10 +908,10 @@ static void action_add_relay(void) {
     fgets(r->host, sizeof(r->host), stdin);
     r->host[strcspn(r->host, "\r\n")] = '\0';
 
-    printf("  Relay port (default %s): ", RELAY_PORT_STR); fflush(stdout);
+    printf("  Relay port (default 443): "); fflush(stdout);
     fgets(r->port, sizeof(r->port), stdin);
     r->port[strcspn(r->port, "\r\n")] = '\0';
-    if (!r->port[0]) strcpy(r->port, RELAY_PORT_STR);
+    if (!r->port[0]) strcpy(r->port, "443");
 
     printf("  Auth token: "); fflush(stdout);
     fgets(r->token, sizeof(r->token), stdin);

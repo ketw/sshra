@@ -60,6 +60,7 @@
 
 #include "../common/protocol.h"
 #include "../common/json_util.h"
+#include "../common/ws.h"
 
 #define MAX_DEVICES     64
 #define MAX_MANAGERS    32
@@ -114,40 +115,13 @@ static MUTEX_T   g_dev_mutex;
 static char      g_auth_token[MAX_TOKEN_LEN] = "";
 static int       g_port = RELAY_PORT;
 
-/* ── Wire helpers ──────────────────────────────────────────────────────────── */
+/* ── Wire helpers — WebSocket framing (server-side, no mask) ───────────────── */
 static int send_msg(socket_t s, const char *payload) {
-    uint32_t len = (uint32_t)strlen(payload);
-    uint32_t wlen = htonl(len);
-    char hdr[4]; memcpy(hdr, &wlen, 4);
-    if (send(s, hdr, 4, 0) != 4) return -1;
-    int sent = 0;
-    while (sent < (int)len) {
-        int n = send(s, payload + sent, (int)len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
-    }
-    return 0;
+    return ws_send_msg((ws_sock_t)s, payload, 0 /* server = no mask */);
 }
 
 static char *recv_msg(socket_t s) {
-    char hdr[4]; int got = 0;
-    while (got < 4) {
-        int n = recv(s, hdr + got, 4 - got, 0);
-        if (n <= 0) return NULL;
-        got += n;
-    }
-    uint32_t len; memcpy(&len, hdr, 4); len = ntohl(len);
-    if (len == 0 || len > MAX_MSG_SIZE) return NULL;
-    char *buf = malloc(len + 1);
-    if (!buf) return NULL;
-    got = 0;
-    while (got < (int)len) {
-        int n = recv(s, buf + got, (int)len - got, 0);
-        if (n <= 0) { free(buf); return NULL; }
-        got += n;
-    }
-    buf[len] = '\0';
-    return buf;
+    return ws_recv_msg((ws_sock_t)s);
 }
 
 static void send_error(socket_t s, const char *reason) {
@@ -271,11 +245,11 @@ static THREAD_RET handle_agent_preauth(void *arg) {
     }
     device_t *dev = &g_devices[slot];
     dev->active = 1;
-    strncpy(dev->device_id, device_id, MAX_DEVICE_ID_LEN-1);
-    strncpy(dev->hostname,  hostname,  MAX_HOSTNAME_LEN-1);
-    strncpy(dev->label,     label,     63);
-    strncpy(dev->os,        os,        127);
-    strncpy(dev->remote_ip, remote_ip, 47);
+    memcpy(dev->device_id, device_id, MAX_DEVICE_ID_LEN); dev->device_id[MAX_DEVICE_ID_LEN-1] = '\0';
+    memcpy(dev->hostname,  hostname,  MAX_HOSTNAME_LEN);  dev->hostname[MAX_HOSTNAME_LEN-1]  = '\0';
+    memcpy(dev->label,     label,     64);                dev->label[63]     = '\0';
+    memcpy(dev->os,        os,        128);               dev->os[127]       = '\0';
+    memcpy(dev->remote_ip, remote_ip, 48);                dev->remote_ip[47] = '\0';
     dev->ssh_port  = (uint16_t)ssh_port;
     dev->last_seen = time(NULL);
     dev->sock      = s;
@@ -388,8 +362,7 @@ static THREAD_RET handle_manager_preauth(void *arg) {
     CLOSE_SOCKET(s); return 0;
 }
 
-/* ── HTTP health check handler (for Render.com) ────────────────────────────── */
-/* Render pings GET /health expecting HTTP 200 to confirm the service is up.   */
+/* ── HTTP health check handler (for Render.com keepalive pings) ─────────────── */
 static void handle_http_health(socket_t s) {
     const char *resp =
         "HTTP/1.1 200 OK\r\n"
@@ -401,53 +374,72 @@ static void handle_http_health(socket_t s) {
     CLOSE_SOCKET(s);
 }
 
-/* ── Single-port dispatcher ────────────────────────────────────────────────── */
+/* ── Single-port WebSocket dispatcher ─────────────────────────────────────── */
+/*
+ * Render routes ALL traffic through HTTPS on port 443.
+ * Every connection arrives as an HTTP request.
+ * - GET /health  → 200 OK (Render health check)
+ * - GET /ms      → WebSocket upgrade → agent or manager
+ */
 static THREAD_RET dispatch_client(void *arg) {
     client_arg_t *ca = (client_arg_t*)arg;
     socket_t s       = ca->sock;
     char remote_ip[48]; memcpy(remote_ip, ca->remote_ip, 48);
 
-    /* Read the framed auth message */
-    char hdr[4]; int got = 0;
-    while (got < 4) {
-        int n = recv(s, hdr + got, 4 - got, 0);
+    /* Read the first line of the HTTP request to determine path */
+    char req_buf[4096]; int rlen = 0;
+    while (rlen < (int)sizeof(req_buf)-1) {
+        int n = recv(s, req_buf + rlen, 1, 0);
         if (n <= 0) { free(ca); CLOSE_SOCKET(s); return 0; }
-        got += n;
+        rlen++;
+        req_buf[rlen] = '\0';
+        if (rlen >= 4 && memcmp(req_buf + rlen - 4, "\r\n\r\n", 4) == 0) break;
     }
-    uint32_t len; memcpy(&len, hdr, 4); len = ntohl(len);
 
-    /* If this looks like HTTP (no length prefix, starts with "GET " or "POST "):
-     * Handle Render's health check probe. HTTP won't have a valid 4-byte length
-     * that matches a reasonable message size — we detect by checking if the
-     * raw 4 bytes spell "GET " or "POST" etc. */
-    if (hdr[0] == 'G' || hdr[0] == 'P' || hdr[0] == 'H') {
-        /* Consume the rest of the HTTP request, then respond */
-        char http_buf[1024]; int hgot = 4;
-        memcpy(http_buf, hdr, 4);
-        while (hgot < (int)sizeof(http_buf) - 1) {
-            int n = recv(s, http_buf + hgot, 1, 0);
-            if (n <= 0) break;
-            hgot += n;
-            http_buf[hgot] = '\0';
-            if (strstr(http_buf, "\r\n\r\n")) break;
-        }
+    /* Health check: GET /health */
+    if (strstr(req_buf, "GET /health") || strstr(req_buf, "GET / ")) {
         handle_http_health(s);
         free(ca); return 0;
     }
 
-    if (len == 0 || len > 8192) { free(ca); CLOSE_SOCKET(s); return 0; }
-
-    char *auth_msg = malloc(len + 1);
-    if (!auth_msg) { free(ca); CLOSE_SOCKET(s); return 0; }
-    got = 0;
-    while (got < (int)len) {
-        int n = recv(s, auth_msg + got, (int)len - got, 0);
-        if (n <= 0) { free(auth_msg); free(ca); CLOSE_SOCKET(s); return 0; }
-        got += n;
+    /* WebSocket upgrade: GET /ms or any other path */
+    /* Re-use the already-read buffer by extracting the WS key and replying */
+    char *key_hdr = strstr(req_buf, "Sec-WebSocket-Key:");
+    if (!key_hdr) {
+        /* Not a WS upgrade — send 400 and close */
+        const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        send(s, bad, (int)strlen(bad), 0);
+        free(ca); CLOSE_SOCKET(s); return 0;
     }
-    auth_msg[len] = '\0';
 
-    /* Parse role before auth (role is not secret) */
+    /* Compute and send 101 Switching Protocols */
+    key_hdr += 18;
+    while (*key_hdr == ' ') key_hdr++;
+    char key[64] = {0}; int ki = 0;
+    while (*key_hdr && *key_hdr != '\r' && *key_hdr != '\n' && ki < 63) key[ki++] = *key_hdr++;
+    key[ki] = '\0';
+
+    char combined[128];
+    snprintf(combined, sizeof(combined), "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+    sha1_t sh; sha1_init(&sh);
+    sha1_update(&sh, combined, (int)strlen(combined));
+    unsigned char digest[20]; sha1_final(&sh, digest);
+    char accept[64]; b64_encode(digest, 20, accept);
+
+    char resp101[256];
+    int r101 = snprintf(resp101, sizeof(resp101),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n", accept);
+    if (ws_send_all((ws_sock_t)s, resp101, r101) != r101) {
+        free(ca); CLOSE_SOCKET(s); return 0;
+    }
+
+    /* Now read the first WS frame — this is the auth message */
+    char *auth_msg = ws_recv_msg((ws_sock_t)s);
+    if (!auth_msg) { free(ca); CLOSE_SOCKET(s); return 0; }
+
+    /* Parse role */
     char role[16] = "agent";
     json_find_str(auth_msg, "role", role, sizeof(role));
 

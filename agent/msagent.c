@@ -33,6 +33,7 @@
 #include "..\common\protocol.h"
 #include "..\common\json_util.h"
 #include "..\common\keymgr.h"
+#include "..\common\ws.h"
 
 /* ---- Constants ---- */
 #define SERVICE_NAME        L"MassAgent"
@@ -308,60 +309,37 @@ static void collect_stats(hw_stats_t *s) {
 }
 
 /* ======================================================
- * NETWORKING - send/recv framed messages
+ * NETWORKING - WebSocket over TCP port 443 (Render.com)
+ *
+ * Render terminates TLS at the edge and forwards plain HTTP/WS
+ * to our container. We connect raw TCP to port 443 — Render's
+ * proxy handles the TLS and forwards us plain bytes.
+ *
+ * Cold-start wake-up: Render free tier spins down after inactivity.
+ * Before connecting, we send an HTTP GET /health and wait for 200.
+ * This wakes the service. We poll until it responds, then upgrade to WS.
  * ====================================================== */
 
-/* Send: [4-byte big-endian length][payload] */
+/* Send a framed JSON message over WebSocket (client side = masked) */
 static int net_send_msg(SOCKET s, const char *payload) {
-    uint32_t len = (uint32_t)strlen(payload);
-    uint32_t wire_len = htonl(len);
-    char header[4];
-    memcpy(header, &wire_len, 4);
-    if (send(s, header, 4, 0) != 4) return -1;
-    int sent = 0;
-    while (sent < (int)len) {
-        int n = send(s, payload + sent, (int)len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
-    }
-    return 0;
+    return ws_send_msg((ws_sock_t)s, payload, 1 /* client = mask */);
 }
 
-/* Recv: returns newly malloc'd null-terminated string, caller frees. NULL on error. */
+/* Receive a framed JSON message from WebSocket */
 static char *net_recv_msg(SOCKET s) {
-    char header[4];
-    int got = 0;
-    while (got < 4) {
-        int n = recv(s, header + got, 4 - got, 0);
-        if (n <= 0) return NULL;
-        got += n;
-    }
-    uint32_t len;
-    memcpy(&len, header, 4);
-    len = ntohl(len);
-    if (len == 0 || len > MAX_MSG_SIZE) return NULL;
-    char *buf = (char*)malloc(len + 1);
-    if (!buf) return NULL;
-    got = 0;
-    while (got < (int)len) {
-        int n = recv(s, buf + got, (int)len - got, 0);
-        if (n <= 0) { free(buf); return NULL; }
-        got += n;
-    }
-    buf[len] = '\0';
-    return buf;
+    return ws_recv_msg((ws_sock_t)s);
 }
 
-/* Connect to relay server, returns connected SOCKET or INVALID_SOCKET */
-static SOCKET relay_connect(void) {
+/* Open a plain TCP socket to host:port. Returns INVALID_SOCKET on failure. */
+static SOCKET tcp_connect(const char *host, const char *port, int timeout_ms) {
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
-    if (getaddrinfo(g_relay_host, g_relay_port, &hints, &res) != 0) {
-        LOG_ERROR("DNS lookup failed for %s", g_relay_host);
+    if (getaddrinfo(host, port, &hints, &res) != 0) {
+        LOG_ERROR("DNS lookup failed for %s", host);
         return INVALID_SOCKET;
     }
 
@@ -369,16 +347,78 @@ static SOCKET relay_connect(void) {
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
-        /* 10s connect timeout */
-        DWORD tv = 10000;
+        DWORD tv = (DWORD)timeout_ms;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&tv, sizeof(tv));
         if (connect(sock, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
         closesocket(sock); sock = INVALID_SOCKET;
     }
     freeaddrinfo(res);
-    if (sock == INVALID_SOCKET) {
-        LOG_ERROR("Cannot connect to relay %s:%s", g_relay_host, g_relay_port);
+    return sock;
+}
+
+/*
+ * relay_wakeup — wake up the Render free-tier service.
+ * Sends GET /health over plain HTTP on port 80 (Render redirects to 443,
+ * but we just want to trigger the wake-up, so port 80 is fine).
+ * Polls every 3 seconds until we get an HTTP 200, max 90 seconds.
+ */
+static void relay_wakeup(void) {
+    LOG_INFO("Waking up relay at %s (cold-start check)...", g_relay_host);
+
+    char req[512];
+    snprintf(req, sizeof(req),
+        "GET /health HTTP/1.0\r\n"
+        "Host: %s\r\n"
+        "Connection: close\r\n\r\n",
+        g_relay_host);
+
+    int attempts = 0;
+    while (WaitForSingleObject(g_stop_event, 0) != WAIT_OBJECT_0) {
+        attempts++;
+        SOCKET s = tcp_connect(g_relay_host, "80", 8000);
+        if (s == INVALID_SOCKET) {
+            /* Port 80 failed — try 443 with raw HTTP (pre-TLS path works for wake) */
+            s = tcp_connect(g_relay_host, "443", 8000);
+        }
+        if (s != INVALID_SOCKET) {
+            send(s, req, (int)strlen(req), 0);
+            char resp[256] = {0};
+            recv(s, resp, sizeof(resp)-1, 0);
+            closesocket(s);
+            if (strstr(resp, "200") || strstr(resp, "101") || strstr(resp, "301")) {
+                LOG_INFO("Relay is awake (attempt %d)", attempts);
+                return;
+            }
+        }
+        if (attempts >= 30) {
+            LOG_WARN("Relay wake-up timed out after %d attempts, trying anyway", attempts);
+            return;
+        }
+        LOG_INFO("Relay waking up... (attempt %d/30)", attempts);
+        WaitForSingleObject(g_stop_event, 3000);
     }
+}
+
+/* Connect to relay and perform WebSocket upgrade. Returns INVALID_SOCKET on failure. */
+static SOCKET relay_connect(void) {
+    /* Always connect to port 443 — Render's public HTTPS port.
+     * Render's proxy accepts plain TCP on 443 and handles TLS itself,
+     * forwarding plain HTTP/WS bytes to our container. */
+    SOCKET sock = tcp_connect(g_relay_host, "443", 15000);
+    if (sock == INVALID_SOCKET) {
+        LOG_ERROR("TCP connect to %s:443 failed", g_relay_host);
+        return INVALID_SOCKET;
+    }
+
+    /* WebSocket client handshake — upgrades the connection */
+    if (ws_client_handshake((ws_sock_t)sock, g_relay_host, "/ms") != 0) {
+        LOG_ERROR("WebSocket handshake failed with %s", g_relay_host);
+        closesocket(sock);
+        return INVALID_SOCKET;
+    }
+
+    LOG_INFO("WebSocket connected to %s", g_relay_host);
     return sock;
 }
 
@@ -494,10 +534,15 @@ static void ensure_sshd_running(void) {
 
 static DWORD WINAPI relay_thread(LPVOID unused) {
     (void)unused;
-    LOG_INFO("Relay thread started, target: %s:%s", g_relay_host, g_relay_port);
+    LOG_INFO("Relay thread started, target: %s:443 (WebSocket)", g_relay_host);
 
     while (WaitForSingleObject(g_stop_event, 0) != WAIT_OBJECT_0) {
         ensure_sshd_running();
+
+        /* Wake up Render free-tier if it spun down */
+        relay_wakeup();
+
+        if (WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0) break;
 
         SOCKET sock = relay_connect();
         if (sock == INVALID_SOCKET) {
