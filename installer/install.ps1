@@ -82,7 +82,8 @@ $AccessGroup = "KiroAccessUsers"
 $AgentExe    = "$InstallDir\kiro-agent.exe"
 
 # Where to download kiro-agent.exe from (GitHub releases of your repo)
-$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/latest/download/kiro-agent.exe"
+# Uses the specific tag URL so prereleases and latest both work
+$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.0/kiro-agent.exe"
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
@@ -357,17 +358,31 @@ Write-Step "Downloading kiro-agent.exe..."
 
 $downloaded = $false
 
-# Try GitHub releases first
+# Force TLS 1.2 — required for GitHub, older Windows defaults to TLS 1.0
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Try GitHub release
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $AgentDownloadUrl -OutFile $AgentExe -UseBasicParsing -ErrorAction Stop
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "kiro-installer/1.0")
+    $wc.DownloadFile($AgentDownloadUrl, $AgentExe)
     if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
         Write-OK "Downloaded kiro-agent.exe from GitHub"
         $downloaded = $true
     }
 } catch {
     Write-Warn "GitHub release download failed: $_"
-    Write-Warn "Trying fallback sources..."
+    Write-Warn "Trying Invoke-WebRequest fallback..."
+    try {
+        Invoke-WebRequest -Uri $AgentDownloadUrl -OutFile $AgentExe `
+            -UseBasicParsing -Headers @{"User-Agent"="kiro-installer/1.0"} -ErrorAction Stop
+        if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
+            Write-OK "Downloaded kiro-agent.exe (fallback)"
+            $downloaded = $true
+        }
+    } catch {
+        Write-Warn "Both download methods failed: $_"
+    }
 }
 
 # Fallback: check next to this script (if distributed as a zip)
