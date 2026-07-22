@@ -366,25 +366,49 @@ try {
         $downloaded = $true
     }
 } catch {
-    Write-Warn "GitHub download failed: $_"
+    Write-Warn "GitHub release download failed: $_"
+    Write-Warn "Trying fallback sources..."
 }
 
 # Fallback: check next to this script (if distributed as a zip)
 if (-not $downloaded) {
-    $localCopy = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "kiro-agent.exe"
-    if (Test-Path $localCopy) {
-        Copy-Item $localCopy $AgentExe -Force
-        Write-OK "Copied bundled kiro-agent.exe"
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if ($scriptPath) {
+        $localCopy = Join-Path (Split-Path $scriptPath) "kiro-agent.exe"
+        if (Test-Path $localCopy) {
+            Copy-Item $localCopy $AgentExe -Force
+            Write-OK "Copied bundled kiro-agent.exe"
+            $downloaded = $true
+        }
+    }
+}
+
+# Fallback: check temp dir (in case it was downloaded there)
+if (-not $downloaded) {
+    $tempCopy = "$env:TEMP\kiro-agent.exe"
+    if (Test-Path $tempCopy) {
+        Copy-Item $tempCopy $AgentExe -Force
+        Write-OK "Found kiro-agent.exe in temp"
         $downloaded = $true
     }
 }
 
 if (-not $downloaded) {
-    Write-Fail "Could not obtain kiro-agent.exe."
-    Write-Fail "Please build it from source (run build\build-agent.bat) and place"
-    Write-Fail "kiro-agent.exe next to this install.ps1, then re-run."
-    Write-Fail ""
-    Write-Fail "Or push a GitHub release at: https://github.com/ketw/sshra/releases"
+    Write-Host ""
+    Write-Host "  ================================================================" -ForegroundColor Yellow
+    Write-Host "  kiro-agent.exe could not be downloaded automatically." -ForegroundColor Yellow
+    Write-Host "  This is because no GitHub Release exists yet for the repo." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  TO FIX: On your laptop, run:" -ForegroundColor White
+    Write-Host "    cd p:\Projects\ssh-access" -ForegroundColor Cyan
+    Write-Host "    build\build-agent.bat" -ForegroundColor Cyan
+    Write-Host "  Then go to https://github.com/ketw/sshra/releases" -ForegroundColor White
+    Write-Host "  Click 'Draft a new release', tag v1.0.0, upload build\kiro-agent.exe" -ForegroundColor White
+    Write-Host "  Then re-run this installer." -ForegroundColor White
+    Write-Host "  ================================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 10 }
     exit 1
 }
 
