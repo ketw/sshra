@@ -188,8 +188,12 @@ Start-Service sshd -ErrorAction SilentlyContinue
 Write-OK "sshd set to auto-start"
 
 # Set default SSH shell to PowerShell
-$pwshPath = (Get-Command pwsh   -ErrorAction SilentlyContinue)?.Source
-if (-not $pwshPath) { $pwshPath = (Get-Command powershell -ErrorAction SilentlyContinue)?.Source }
+$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+$pwshPath = if ($pwshCmd) { $pwshCmd.Source } else { $null }
+if (-not $pwshPath) {
+    $psCmd = Get-Command powershell -ErrorAction SilentlyContinue
+    $pwshPath = if ($psCmd) { $psCmd.Source } else { $null }
+}
 if ($pwshPath) {
     if (-not (Test-Path "HKLM:\SOFTWARE\OpenSSH")) {
         New-Item -Path "HKLM:\SOFTWARE\OpenSSH" -Force | Out-Null
