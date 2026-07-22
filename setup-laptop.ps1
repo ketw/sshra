@@ -153,6 +153,12 @@ while ($true) {
     $safeName = $deviceName -replace '[^a-zA-Z0-9_-]', '_'
     $keyPath  = "$MsKeys\id_$safeName"
 
+    # Skip if already imported this session
+    if ($importedKeys | Where-Object { $_.SafeName -eq $safeName }) {
+        Write-Warn "'$deviceName' already imported this session — skipping."
+        continue
+    }
+
     Write-Host ""
     Write-Host "  Paste the PRIVATE KEY for '$deviceName'." -ForegroundColor Yellow
     Write-Host "  Include the -----BEGIN----- and -----END----- lines." -ForegroundColor DarkGray
