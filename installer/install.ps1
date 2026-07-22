@@ -1,31 +1,14 @@
-#Requires -RunAsAdministrator
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     KiroAccess - Fully Automatic Self-Contained Installer
-    
-    Downloads and installs EVERYTHING automatically:
-    - OpenSSH Server (if missing)
-    - Generates your SSH keypair (if missing on this machine)
-    - kiro-agent.exe (downloaded from GitHub releases)
-    - Windows service (auto-start, pre-login, SYSTEM account)
-    - Firewall rules
-    - Hardened sshd_config (your key only, no passwords ever)
-    - OpenHardwareMonitor (for CPU/GPU temps)
-
-    Just run it. It asks only 3 things:
-      1. Your relay host (e.g. ra-u9qf.onrender.com)
-      2. Your relay token
-      3. Your device label (e.g. "Gaming PC")
-
-    Everything else is fully automatic.
-
+    Supports PowerShell 5.1+. Self-elevates to admin automatically.
 .EXAMPLE
-    # Interactive - just run it:
-    .\install.ps1
+    # One-liner from anywhere (even non-admin terminal):
+    irm https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1 | iex
 
-    # Fully silent (no prompts at all):
-    .\install.ps1 -RelayHost "ra-u9qf.onrender.com" -RelayPort "10000" `
-                  -Token "yourtoken" -Label "Gaming PC"
+    # Silent:
+    .\install.ps1 -RelayHost "ra-u9qf.onrender.com" -RelayPort "10000" -Token "yourtoken" -Label "Gaming PC"
 
     # Uninstall:
     .\install.ps1 -Uninstall
@@ -37,6 +20,32 @@ param(
     [string]$Label     = "",
     [switch]$Uninstall
 )
+
+# ── Self-elevate to Administrator if not already ──────────────────────────────
+$currentPrincipal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    Write-Host "  Not running as Administrator. Re-launching elevated..." -ForegroundColor Yellow
+    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass")
+    # If we were piped (no script file), download to temp and re-run
+    if ($MyInvocation.MyCommand.Path) {
+        $argList += "-File", "`"$($MyInvocation.MyCommand.Path)`""
+        if ($RelayHost) { $argList += "-RelayHost", "`"$RelayHost`"" }
+        if ($RelayPort) { $argList += "-RelayPort", "`"$RelayPort`"" }
+        if ($Token)     { $argList += "-Token",     "`"$Token`"" }
+        if ($Label)     { $argList += "-Label",     "`"$Label`"" }
+        if ($Uninstall) { $argList += "-Uninstall" }
+    } else {
+        # Running via iex pipe — download script to temp and run it elevated
+        $tmpScript = "$env:TEMP\kiro_install.ps1"
+        Invoke-WebRequest "https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1" `
+            -OutFile $tmpScript -UseBasicParsing
+        $argList += "-File", "`"$tmpScript`""
+    }
+    Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+    exit 0
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -102,6 +111,9 @@ if (-not $Label) {
     $input = (Read-Host "  [3/3] Device label (press Enter for '$suggested')").Trim()
     $Label = if ($input) { $input } else { $suggested }
 }
+
+# Strip any https:// or http:// prefix — agent connects via raw TCP not HTTP
+$RelayHost = $RelayHost -replace '^https?://', '' -replace '/$', ''
 
 Write-Host ""
 Write-Host "  Relay : ${RelayHost}:${RelayPort}" -ForegroundColor DarkGray
