@@ -1,300 +1,149 @@
-#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Mass - Fully Automatic Self-Contained Installer
-    Supports PowerShell 5.1+. Self-elevates to admin automatically.
+    Mass Agent - Zero-Prompt Auto Installer
+    Reads all config from .temp/.env in the repo. No questions asked.
+    Self-elevates to admin automatically.
+
 .EXAMPLE
-    # One-liner from anywhere (even non-admin terminal):
     irm https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1 | iex
-
-    # Silent:
-    .\install.ps1 -RelayHost "ra-u9qf.onrender.com" -RelayPort "10000" -Token "yourtoken" -Label "Gaming PC"
-
-    # Uninstall:
-    .\install.ps1 -Uninstall
 #>
-param(
-    [string]$RelayHost = "",
-    [string]$RelayPort = "10000",
-    [string]$Token     = "",
-    [string]$Label     = "",
-    [switch]$Uninstall
-)
-
-# ── Self-elevate to Administrator if not already ──────────────────────────────
-$currentPrincipal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
-    Write-Host "  Not running as Administrator. Re-launching elevated..." -ForegroundColor Yellow
-    # Always download fresh copy to temp — works whether run via iex or as a file
-    $tmpScript = "$env:TEMP\ms_install.ps1"
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest "https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1" `
-            -OutFile $tmpScript -UseBasicParsing -ErrorAction Stop
-    } catch {
-        # If download fails, copy self if we have a path
-        if ($MyInvocation.MyCommand.Path) {
-            Copy-Item $MyInvocation.MyCommand.Path $tmpScript -Force
-        } else {
-            Write-Host "  ERROR: Could not prepare installer for elevation." -ForegroundColor Red
-            pause; exit 1
-        }
-    }
-
-    # Build argument string — pass any params the user already gave
-    $params = ""
-    if ($RelayHost) { $params += " -RelayHost `"$RelayHost`"" }
-    if ($RelayPort) { $params += " -RelayPort `"$RelayPort`"" }
-    if ($Token)     { $params += " -Token `"$Token`"" }
-    if ($Label)     { $params += " -Label `"$Label`"" }
-    if ($Uninstall) { $params += " -Uninstall" }
-
-    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$tmpScript`"$params"
-
-    Start-Process powershell -Verb RunAs -ArgumentList $argList
-    # Do NOT use -Wait here — just launch and exit this non-admin instance
-    exit 0
-}
 
 $ErrorActionPreference = "Stop"
 
-# Wrap everything in try/catch so the window never silently closes on error
 trap {
+    $msg = $_.ToString()
     Write-Host ""
-    Write-Host "  ================================================================" -ForegroundColor Red
-    Write-Host "  ERROR: $_" -ForegroundColor Red
-    Write-Host "  ================================================================" -ForegroundColor Red
+    Write-Host "  ERROR: $msg" -ForegroundColor Red
+    Add-Content -Path "$env:ProgramData\Mass\install.log" -Value "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')][ERROR] $msg" -ErrorAction SilentlyContinue
     Write-Host ""
     Write-Host "  Press any key to close..." -ForegroundColor DarkGray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 30 }
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 15 }
     exit 1
 }
 
-# ── Paths & names ─────────────────────────────────────────────────────────────
-$InstallDir  = "C:\Program Files\Mass"
-$DataDir     = "C:\ProgramData\Mass"
-$SshDir      = "C:\ProgramData\ssh"
-$ServiceName = "MassAgent"
-$RegKey      = "HKLM:\SOFTWARE\Mass"
-$AccessGroup = "MassUsers"
-$AgentExe    = "$InstallDir\msagent.exe"
-
-# Where to download msagent.exe from (GitHub releases of your repo)
-# Uses the specific tag URL so prereleases and latest both work
-$AgentDownloadUrl = "https://github.com/ketw/sshra/releases/download/v1.0.1/msagent.exe"
-
-# ── Output helpers ────────────────────────────────────────────────────────────
-function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
-function Write-OK   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green }
-function Write-Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
-function Write-Fail { param($m) Write-Host "  [XX] $m" -ForegroundColor Red }
-
-function Write-Banner {
-    Clear-Host
-    Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
-    Write-Host "  ║        Mass - Auto Installer           ║" -ForegroundColor Magenta
-    Write-Host "  ║   Sets up everything. No manual steps.       ║" -ForegroundColor Magenta
-    Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
-    Write-Host ""
-}
-
-# ── Uninstall ─────────────────────────────────────────────────────────────────
-if ($Uninstall) {
-    Write-Host "  Uninstalling Mass..." -ForegroundColor Yellow
-    Stop-Service  $ServiceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep 2
-    if (Test-Path $AgentExe) { & $AgentExe --uninstall 2>$null }
-    sc.exe delete $ServiceName 2>$null | Out-Null
-    Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $DataDir    -ErrorAction SilentlyContinue
-    if (Test-Path $RegKey) { Remove-Item -Recurse -Force $RegKey }
-    Remove-NetFirewallRule -DisplayName "Mass*" -ErrorAction SilentlyContinue
-    Remove-LocalGroup $AccessGroup -ErrorAction SilentlyContinue
-    Write-Host "  Done. Mass removed." -ForegroundColor Green
+# ── Self-elevate ──────────────────────────────────────────────────────────────
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    $tmp = "$env:TEMP\ms_install.ps1"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    (New-Object System.Net.WebClient).DownloadFile(
+        "https://raw.githubusercontent.com/ketw/sshra/master/installer/install.ps1", $tmp)
+    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmp`""
     exit 0
 }
 
-Write-Banner
+# ── Paths ─────────────────────────────────────────────────────────────────────
+$InstallDir  = "C:\Program Files\Mass"
+$DataDir     = "$env:ProgramData\Mass"
+$SshDir      = "$env:ProgramData\ssh"
+$RegKey      = "HKLM:\SOFTWARE\Mass"
+$ServiceName = "MassAgent"
+$TempUrl     = "https://raw.githubusercontent.com/ketw/sshra/master/.temp"
+$AgentExe    = "$InstallDir\msagent.exe"
+$UpdateExe   = "$InstallDir\msupdate.exe"
 
-# ── Step 0: Gather the 3 required pieces of info ─────────────────────────────
-Write-Host "  This installer will set up everything automatically." -ForegroundColor White
-Write-Host "  It only needs 3 things from you:" -ForegroundColor White
-Write-Host ""
-
-if (-not $RelayHost) {
-    $RelayHost = (Read-Host "  [1/3] Relay server host (e.g. ra-u9qf.onrender.com)").Trim()
-}
-if (-not $Token) {
-    $Token = (Read-Host "  [2/3] Relay auth token").Trim()
-}
-if (-not $Label) {
-    $suggested = $env:COMPUTERNAME
-    $input = (Read-Host "  [3/3] Device label (press Enter for '$suggested')").Trim()
-    $Label = if ($input) { $input } else { $suggested }
-}
-
-# Strip any https:// or http:// prefix — agent connects via raw TCP not HTTP
-$RelayHost = $RelayHost -replace '^https?://', '' -replace '/$', ''
-
-Write-Host ""
-Write-Host "  Relay : ${RelayHost}:${RelayPort}" -ForegroundColor DarkGray
-Write-Host "  Label : $Label"                    -ForegroundColor DarkGray
-Write-Host ""
-
-# ── Step 1: Create directories ────────────────────────────────────────────────
-Write-Step "Creating directories..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir    | Out-Null
 New-Item -ItemType Directory -Force -Path $SshDir     | Out-Null
-Write-OK "Directories ready"
 
-# ── Step 2: Install OpenSSH Server (fully automatic) ─────────────────────────
-Write-Step "Installing OpenSSH Server..."
+# ── Logging ───────────────────────────────────────────────────────────────────
+$LogFile = "$DataDir\install.log"
+function Log  { param($m) "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] $m" | Add-Content $LogFile -ErrorAction SilentlyContinue }
+function Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan;   Log "STEP $m" }
+function OK   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green;  Log "OK   $m" }
+function Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow; Log "WARN $m" }
 
-$sshdInstalled = $false
+Clear-Host
+Write-Host ""
+Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
+Write-Host "  ║       Mass Agent - Auto Installer            ║" -ForegroundColor Magenta
+Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
+Write-Host ""
+Log "=== Install started on $env:COMPUTERNAME ==="
 
-# Method A: Windows optional feature (Windows 10 1809+ / Windows 11)
+# ── Step 1: Fetch .env from repo ──────────────────────────────────────────────
+Step "Fetching config from repo..."
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = New-Object System.Net.WebClient
+$wc.Headers.Add("User-Agent", "ms-installer/1.0")
+$envRaw = $wc.DownloadString("$TempUrl/.env")
+
+$cfg = @{}
+foreach ($line in ($envRaw -split "`n")) {
+    $line = $line.Trim()
+    if ($line -match '^\s*#' -or $line -eq '') { continue }
+    if ($line -match '^([^=]+)=(.*)$') { $cfg[$Matches[1].Trim()] = $Matches[2].Trim() }
+}
+
+$RelayHost = $cfg['RELAY_HOST']
+$RelayPort = if ($cfg['RELAY_PORT']) { $cfg['RELAY_PORT'] } else { '443' }
+$Token     = $cfg['RELAY_TOKEN']
+$TempBase  = if ($cfg['TEMP_URL'])   { $cfg['TEMP_URL']   } else { $TempUrl }
+OK "Config: relay=$RelayHost port=$RelayPort"
+
+# ── Step 2: Device identity (no prompt — use computer name) ───────────────────
+$Label    = $env:COMPUTERNAME
+$MachGuid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography").MachineGuid
+$DeviceId = ($MachGuid -replace '-','').Substring(0, [Math]::Min(32,($MachGuid -replace '-','').Length))
+OK "Device: $Label ($DeviceId)"
+
+# ── Step 3: Install OpenSSH ───────────────────────────────────────────────────
+Step "Checking OpenSSH Server..."
+$sshdOk = $false
 try {
     $cap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" -ErrorAction Stop
-    if ($cap.State -eq "Installed") {
-        Write-OK "OpenSSH Server already installed (Windows feature)"
-        $sshdInstalled = $true
-    } else {
-        Write-Step "Adding OpenSSH.Server Windows feature (downloading ~3MB)..."
+    if ($cap.State -eq 'Installed') { OK "OpenSSH already installed"; $sshdOk = $true }
+    else {
+        Step "Installing OpenSSH (Windows feature)..."
         Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
-        Write-OK "OpenSSH Server installed via Windows feature"
-        $sshdInstalled = $true
+        OK "OpenSSH installed"; $sshdOk = $true
     }
-} catch {
-    Write-Warn "Windows feature method failed, trying winget..."
+} catch { Warn "Feature method failed, trying GitHub download..." }
+
+if (-not $sshdOk) {
+    $zip = "$env:TEMP\OpenSSH.zip"
+    $wc.DownloadFile("https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip", $zip)
+    Expand-Archive $zip "$env:TEMP\OpenSSH-Win64" -Force
+    $dest = "C:\Program Files\OpenSSH"
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    Move-Item "$env:TEMP\OpenSSH-Win64\OpenSSH-Win64" $dest -Force
+    Push-Location $dest
+    powershell -ExecutionPolicy Bypass -File ".\install-sshd.ps1" | Out-Null
+    Pop-Location
+    OK "OpenSSH installed from GitHub"
 }
 
-# Method B: winget (fallback for older Windows)
-if (-not $sshdInstalled) {
-    try {
-        $wg = Get-Command winget -ErrorAction Stop
-        Write-Step "Installing OpenSSH via winget..."
-        & winget install --id "Microsoft.OpenSSH.Beta" -e --silent --accept-package-agreements --accept-source-agreements 2>$null
-        Start-Sleep 3
-        if (Get-Service sshd -ErrorAction SilentlyContinue) {
-            Write-OK "OpenSSH installed via winget"
-            $sshdInstalled = $true
-        }
-    } catch {
-        Write-Warn "winget not available, trying direct download..."
-    }
-}
-
-# Method C: Direct download from GitHub (ultimate fallback, works on any Windows)
-if (-not $sshdInstalled) {
-    Write-Step "Downloading OpenSSH directly from GitHub (Microsoft release)..."
-    $sshZipUrl  = "https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip"
-    $sshZipPath = "$env:TEMP\OpenSSH-Win64.zip"
-    $sshExtract = "$env:TEMP\OpenSSH-Win64"
-    $sshInstallPath = "C:\Program Files\OpenSSH"
-
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $sshZipUrl -OutFile $sshZipPath -UseBasicParsing
-        Write-Step "Extracting OpenSSH..."
-        Expand-Archive -Path $sshZipPath -DestinationPath $env:TEMP -Force
-        if (Test-Path $sshInstallPath) { Remove-Item -Recurse -Force $sshInstallPath }
-        Move-Item "$sshExtract" $sshInstallPath -Force
-
-        # Install the service using the bundled install script
-        Push-Location $sshInstallPath
-        powershell.exe -ExecutionPolicy Bypass -File ".\install-sshd.ps1" | Out-Null
-        Pop-Location
-
-        Write-OK "OpenSSH installed from GitHub release"
-        $sshdInstalled = $true
-    } catch {
-        Write-Fail "Could not install OpenSSH automatically: $_"
-        Write-Fail "Please install it manually from: https://github.com/PowerShell/Win32-OpenSSH/releases"
-        exit 1
-    }
-}
-
-# Configure sshd to auto-start
 Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service sshd -ErrorAction SilentlyContinue
-Write-OK "sshd set to auto-start"
+$shPath = (Get-Command pwsh -ErrorAction SilentlyContinue)
+if (-not $shPath) { $shPath = Get-Command powershell }
+if (-not (Test-Path "HKLM:\SOFTWARE\OpenSSH")) { New-Item "HKLM:\SOFTWARE\OpenSSH" -Force | Out-Null }
+New-ItemProperty "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value $shPath.Source -Force | Out-Null
+OK "sshd running, default shell: $($shPath.Source)"
 
-# Set default SSH shell to PowerShell
-$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-$pwshPath = if ($pwshCmd) { $pwshCmd.Source } else { $null }
-if (-not $pwshPath) {
-    $psCmd = Get-Command powershell -ErrorAction SilentlyContinue
-    $pwshPath = if ($psCmd) { $psCmd.Source } else { $null }
-}
-if ($pwshPath) {
-    if (-not (Test-Path "HKLM:\SOFTWARE\OpenSSH")) {
-        New-Item -Path "HKLM:\SOFTWARE\OpenSSH" -Force | Out-Null
-    }
-    New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name "DefaultShell" `
-        -Value $pwshPath -PropertyType String -Force | Out-Null
-    Write-OK "Default SSH shell: $pwshPath"
-}
-
-# ── Step 3: Generate SSH keypair on THIS machine (so we have a key to work with)
-#    We generate the key here, then the installer outputs the PUBLIC KEY so
-#    the user can copy it to their laptop. The private key stays on this machine
-#    only if needed, but more importantly we capture the owner's LAPTOP public key.
-#    
-#    Actually: we generate a keypair FOR THE OWNER'S LAPTOP right here,
-#    then write it to authorized_keys. The owner copies the private key to their laptop.
-#    This is the zero-manual-step approach — no need to bring a key FROM the laptop.
-# ─────────────────────────────────────────────────────────────────────────────
-Write-Step "Generating SSH keypair for owner access..."
-
-$KeyDir     = "$DataDir\owner_key"
-$PrivKeyPath = "$KeyDir\id_ed25519"
-$PubKeyPath  = "$KeyDir\id_ed25519.pub"
-
+# ── Step 4: SSH keypair ───────────────────────────────────────────────────────
+Step "Generating SSH keypair..."
+$KeyDir  = "$DataDir\owner_key"
+$PrivKey = "$KeyDir\id_ed25519"
+$PubKey  = "$KeyDir\id_ed25519.pub"
 New-Item -ItemType Directory -Force -Path $KeyDir | Out-Null
+$sshkg = @("C:\Windows\System32\OpenSSH\ssh-keygen.exe",
+           "C:\Program Files\OpenSSH\ssh-keygen.exe") |
+         Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $sshkg) { $sshkg = (Get-Command ssh-keygen -ErrorAction SilentlyContinue).Source }
+if (-not $sshkg) { throw "ssh-keygen not found" }
+if (-not (Test-Path $PrivKey)) {
+    & $sshkg -t ed25519 -f $PrivKey -N '""' -C "ms-owner" 2>$null
+    OK "Keypair generated"
+} else { OK "Keypair already exists" }
+$OwnerPubKey = (Get-Content $PubKey -Raw).Trim()
 
-# Check if ssh-keygen is now available
-$sshKeygen = Get-Command ssh-keygen -ErrorAction SilentlyContinue
-if (-not $sshKeygen) {
-    # Try known paths
-    $candidates = @(
-        "C:\Program Files\OpenSSH\ssh-keygen.exe",
-        "C:\Windows\System32\OpenSSH\ssh-keygen.exe",
-        "C:\Program Files\OpenSSH-Win64\ssh-keygen.exe"
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path $c) { $sshKeygen = $c; break }
-    }
-}
-
-if (-not $sshKeygen) {
-    Write-Fail "ssh-keygen not found after OpenSSH install. Please restart and re-run."
-    exit 1
-}
-
-$sshKeygenExe = if ($sshKeygen -is [string]) { $sshKeygen } else { $sshKeygen.Source }
-
-if (-not (Test-Path $PrivKeyPath)) {
-    & $sshKeygenExe -t ed25519 -f $PrivKeyPath -N '""' -C "Mass-owner" 2>$null
-    Write-OK "SSH keypair generated"
-} else {
-    Write-OK "SSH keypair already exists"
-}
-
-$OwnerPublicKey = (Get-Content $PubKeyPath -Raw).Trim()
-Write-OK "Owner public key ready"
-
-# ── Step 4: Deploy hardened sshd_config ───────────────────────────────────────
-Write-Step "Deploying hardened SSH config (your key only, no passwords)..."
-
-$progDataFwd = $env:ProgramData.Replace('\','/')
-$sshdConfig = @"
-# Mass hardened sshd_config - auto-generated, do not edit manually
+# ── Step 5: Hardened sshd_config + authorized_keys ───────────────────────────
+Step "Writing hardened sshd_config..."
+$progFwd = $env:ProgramData.Replace('\','/')
+Set-Content "$SshDir\sshd_config" @"
 Port 22
-AuthorizedKeysFile          $progDataFwd/ssh/administrators_authorized_keys
+AuthorizedKeysFile          $progFwd/ssh/administrators_authorized_keys
 PubkeyAuthentication        yes
 PasswordAuthentication      no
 PermitEmptyPasswords        no
@@ -302,265 +151,135 @@ ChallengeResponseAuthentication no
 KbdInteractiveAuthentication    no
 GSSAPIAuthentication            no
 HostbasedAuthentication         no
-PermitRootLogin                 prohibit-password
 MaxAuthTries                    3
-MaxSessions                     10
 LoginGraceTime                  20
-ClientAliveInterval             60
-ClientAliveCountMax             3
 StrictModes                     yes
 AllowTcpForwarding              yes
-AllowAgentForwarding            yes
-X11Forwarding                   no
+AllowGroups                     MassUsers Administrators
 Subsystem sftp                  sftp-server.exe
-"@
+"@ -Encoding UTF8
+OK "sshd_config written"
 
-Set-Content -Path "$SshDir\sshd_config" -Value $sshdConfig -Encoding UTF8
-Write-OK "Hardened sshd_config written"
-
-# ── Step 5: Write authorized_keys (ONLY the generated owner key) ──────────────
-Write-Step "Writing authorized_keys (owner key only)..."
-
-$adminAuthKeys = "$SshDir\administrators_authorized_keys"
-Set-Content -Path $adminAuthKeys -Value $OwnerPublicKey -Encoding UTF8
-Write-OK "authorized_keys written"
-
-# Lock down file permissions
+$authKeys = "$SshDir\administrators_authorized_keys"
+Set-Content $authKeys $OwnerPubKey -Encoding UTF8
 try {
     $acl = New-Object System.Security.AccessControl.FileSecurity
-    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetAccessRuleProtection($true,$false)
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl","Allow")))
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators","FullControl","Allow")))
-    Set-Acl -Path $adminAuthKeys -AclObject $acl
-    Write-OK "authorized_keys permissions locked"
-} catch {
-    # icacls fallback
-    icacls $adminAuthKeys /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>$null | Out-Null
-    Write-OK "authorized_keys permissions set via icacls"
-}
+    Set-Acl $authKeys $acl
+} catch { icacls $authKeys /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>$null | Out-Null }
+OK "authorized_keys locked (owner only)"
 
-# ── Step 6: Create MassUsers group ─────────────────────────────────────
-Write-Step "Setting up access control group..."
-if (-not (Get-LocalGroup $AccessGroup -ErrorAction SilentlyContinue)) {
-    New-LocalGroup -Name $AccessGroup -Description "Mass SSH access group" | Out-Null
+if (-not (Get-LocalGroup MassUsers -ErrorAction SilentlyContinue)) {
+    New-LocalGroup MassUsers -Description "Mass SSH access" | Out-Null
 }
-Add-LocalGroupMember -Group $AccessGroup -Member "Administrators" -ErrorAction SilentlyContinue
-Write-OK "Access group configured"
-
-# Restart sshd with new config
-Write-Step "Restarting sshd with hardened config..."
+Add-LocalGroupMember -Group MassUsers -Member Administrators -ErrorAction SilentlyContinue
 Restart-Service sshd -Force -ErrorAction SilentlyContinue
-Start-Sleep 2
-Write-OK "sshd restarted"
+OK "sshd restarted with hardened config"
 
-# ── Step 7: Download msagent.exe ───────────────────────────────────────────
-Write-Step "Downloading msagent.exe..."
-
-$downloaded = $false
-
-# Force TLS 1.2 — required for GitHub, older Windows defaults to TLS 1.0
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-# Try GitHub release
-try {
-    $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "ms-installer/1.0")
-    $wc.DownloadFile($AgentDownloadUrl, $AgentExe)
-    if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
-        Write-OK "Downloaded msagent.exe from GitHub"
-        $downloaded = $true
+# ── Step 6: Download binaries from .temp/ ────────────────────────────────────
+Step "Downloading binaries from .temp/..."
+foreach ($item in @(
+    [PSCustomObject]@{ url="$TempBase/msagent.exe";  dest=$AgentExe },
+    [PSCustomObject]@{ url="$TempBase/msupdate.exe"; dest=$UpdateExe }
+)) {
+    $fname = [System.IO.Path]::GetFileName($item.dest)
+    $done = $false
+    for ($i = 1; $i -le 3 -and -not $done; $i++) {
+        try {
+            $w2 = New-Object System.Net.WebClient
+            $w2.Headers.Add("User-Agent","ms-installer/1.0")
+            $w2.DownloadFile($item.url, $item.dest)
+            if ((Test-Path $item.dest) -and (Get-Item $item.dest).Length -gt 10000) {
+                OK "Downloaded $fname ($([math]::Round((Get-Item $item.dest).Length/1KB))KB)"
+                $done = $true
+            }
+        } catch { Warn "Attempt $i for ${fname}: $_"; Start-Sleep 3 }
     }
-} catch {
-    Write-Warn "GitHub release download failed: $_"
-    Write-Warn "Trying Invoke-WebRequest fallback..."
-    try {
-        Invoke-WebRequest -Uri $AgentDownloadUrl -OutFile $AgentExe `
-            -UseBasicParsing -Headers @{"User-Agent"="ms-installer/1.0"} -ErrorAction Stop
-        if ((Test-Path $AgentExe) -and (Get-Item $AgentExe).Length -gt 10000) {
-            Write-OK "Downloaded msagent.exe (fallback)"
-            $downloaded = $true
-        }
-    } catch {
-        Write-Warn "Both download methods failed: $_"
-    }
+    if (-not $done) { throw "Could not download $fname from $($item.url)" }
 }
 
-# Fallback: check next to this script (if distributed as a zip)
-if (-not $downloaded) {
-    $scriptPath = $MyInvocation.MyCommand.Path
-    if ($scriptPath) {
-        $localCopy = Join-Path (Split-Path $scriptPath) "msagent.exe"
-        if (Test-Path $localCopy) {
-            Copy-Item $localCopy $AgentExe -Force
-            Write-OK "Copied bundled msagent.exe"
-            $downloaded = $true
-        }
-    }
-}
+# ── Step 7: Registry config ───────────────────────────────────────────────────
+Step "Writing registry config..."
+if (-not (Test-Path $RegKey)) { New-Item $RegKey -Force | Out-Null }
+Set-ItemProperty $RegKey RelayHost   $RelayHost  -Type String
+Set-ItemProperty $RegKey RelayPort   $RelayPort  -Type String
+Set-ItemProperty $RegKey AuthToken   $Token      -Type String
+Set-ItemProperty $RegKey DeviceLabel $Label      -Type String
+Set-ItemProperty $RegKey DeviceID    $DeviceId   -Type String
+Set-ItemProperty $RegKey RepoRaw     "https://raw.githubusercontent.com/ketw/sshra/master" -Type String
+Set-ItemProperty $RegKey Version     "1.0.1"     -Type String
+OK "Registry written"
 
-# Fallback: check temp dir (in case it was downloaded there)
-if (-not $downloaded) {
-    $tempCopy = "$env:TEMP\msagent.exe"
-    if (Test-Path $tempCopy) {
-        Copy-Item $tempCopy $AgentExe -Force
-        Write-OK "Found msagent.exe in temp"
-        $downloaded = $true
-    }
-}
-
-if (-not $downloaded) {
-    Write-Host ""
-    Write-Host "  ================================================================" -ForegroundColor Yellow
-    Write-Host "  msagent.exe could not be downloaded automatically." -ForegroundColor Yellow
-    Write-Host "  This is because no GitHub Release exists yet for the repo." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  TO FIX: On your laptop, run:" -ForegroundColor White
-    Write-Host "    cd p:\Projects\ssh-access" -ForegroundColor Cyan
-    Write-Host "    build\build-agent.bat" -ForegroundColor Cyan
-    Write-Host "  Then go to https://github.com/ketw/sshra/releases" -ForegroundColor White
-    Write-Host "  Click 'Draft a new release', tag v1.0.1, upload build\msagent.exe" -ForegroundColor White
-    Write-Host "  Then re-run this installer." -ForegroundColor White
-    Write-Host "  ================================================================" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Press any key to close..." -ForegroundColor DarkGray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 10 }
-    exit 1
-}
-
-# ── Step 8: Write registry config ─────────────────────────────────────────────
-Write-Step "Writing service configuration..."
-
-$machineGuid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography").MachineGuid
-$DeviceId = $machineGuid.Replace("-","")
-if ($DeviceId.Length -gt 32) { $DeviceId = $DeviceId.Substring(0,32) }
-
-if (-not (Test-Path $RegKey)) { New-Item -Path $RegKey -Force | Out-Null }
-Set-ItemProperty -Path $RegKey -Name "RelayHost"   -Value $RelayHost  -Type String
-Set-ItemProperty -Path $RegKey -Name "RelayPort"   -Value $RelayPort  -Type String
-Set-ItemProperty -Path $RegKey -Name "AuthToken"   -Value $Token      -Type String
-Set-ItemProperty -Path $RegKey -Name "DeviceLabel" -Value $Label      -Type String
-Set-ItemProperty -Path $RegKey -Name "DeviceID"    -Value $DeviceId   -Type String
-Write-OK "Registry config written"
-
-# ── Step 9: Install Windows service ───────────────────────────────────────────
-Write-Step "Installing Mass Windows service..."
-
-# Remove old service if present
+# ── Step 8: Install MassAgent service ────────────────────────────────────────
+Step "Installing MassAgent service..."
 $old = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($old) {
-    Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep 2
-    & $AgentExe --uninstall 2>$null
-    Start-Sleep 1
+    Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+    & $AgentExe --uninstall 2>$null; Start-Sleep 1
 }
-
-& $AgentExe --install
-Start-Sleep 2
-
-# Confirm running
+& $AgentExe --install; Start-Sleep 2
 $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq "Running") {
-    Write-OK "Mass Agent service is running"
-} else {
-    Start-Service $ServiceName -ErrorAction SilentlyContinue
-    Start-Sleep 2
-    $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -eq "Running") {
-        Write-OK "Service started"
-    } else {
-        Write-Warn "Service installed but not running yet. Check: $DataDir\agent.log"
-    }
+if (-not ($svc -and $svc.Status -eq 'Running')) {
+    Start-Service $ServiceName -ErrorAction SilentlyContinue; Start-Sleep 2
 }
-
-# Ensure auto-start (not delayed)
 sc.exe config $ServiceName start= auto | Out-Null
-sc.exe config $ServiceName start= auto delayed= false 2>$null | Out-Null
-Write-OK "Service set to auto-start (pre-login)"
+$svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -eq 'Running') { OK "MassAgent running (auto-start)" }
+else { Warn "MassAgent installed but not running — check $DataDir\agent.log" }
 
-# ── Step 10: Firewall rules ────────────────────────────────────────────────────
-Write-Step "Configuring firewall..."
-Remove-NetFirewallRule -DisplayName "Mass*" -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName "Mass SSH In" `
-    -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow | Out-Null
-New-NetFirewallRule -DisplayName "Mass Relay Out" `
-    -Direction Outbound -Protocol TCP -RemotePort $RelayPort -Action Allow | Out-Null
-Write-OK "Firewall rules set"
-
-# ── Step 11: Try to install OpenHardwareMonitor silently (for temps) ──────────
-Write-Step "Checking OpenHardwareMonitor (for CPU/GPU temps)..."
-$ohmExe = "C:\Program Files\OpenHardwareMonitor\OpenHardwareMonitor.exe"
-if (-not (Test-Path $ohmExe)) {
-    try {
-        $ohmZipUrl  = "https://openhardwaremonitor.org/files/openhardwaremonitor-r0.9.6.zip"
-        $ohmZip     = "$env:TEMP\ohm.zip"
-        $ohmExtract = "$env:TEMP\ohm_extract"
-        Invoke-WebRequest -Uri $ohmZipUrl -OutFile $ohmZip -UseBasicParsing -TimeoutSec 30
-        Expand-Archive -Path $ohmZip -DestinationPath $ohmExtract -Force
-        $ohmDir = "C:\Program Files\OpenHardwareMonitor"
-        New-Item -ItemType Directory -Force -Path $ohmDir | Out-Null
-        Get-ChildItem "$ohmExtract\OpenHardwareMonitor" | Copy-Item -Destination $ohmDir -Recurse -Force
-        # Add to startup (HKLM run key) so it starts with Windows and exposes shared memory
-        $ohmRunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-        Set-ItemProperty -Path $ohmRunKey -Name "OpenHardwareMonitor" -Value "`"$ohmExe`" /startup"
-        # Start it now
-        Start-Process $ohmExe -WindowStyle Hidden -ErrorAction SilentlyContinue
-        Write-OK "OpenHardwareMonitor installed and started"
-    } catch {
-        Write-Warn "Could not auto-install OpenHardwareMonitor (CPU/GPU temps will show N/A)"
-        Write-Warn "Install manually from: https://openhardwaremonitor.org/downloads/"
-    }
-} else {
-    Write-OK "OpenHardwareMonitor already installed"
+# ── Step 9: Install MassUpdater service ──────────────────────────────────────
+Step "Installing MassUpdater service..."
+$oldU = Get-Service MassUpdater -ErrorAction SilentlyContinue
+if ($oldU) {
+    Stop-Service MassUpdater -Force -ErrorAction SilentlyContinue; Start-Sleep 1
+    & $UpdateExe --uninstall 2>$null; Start-Sleep 1
 }
+& $UpdateExe --install; Start-Sleep 2
+$svcU = Get-Service MassUpdater -ErrorAction SilentlyContinue
+if ($svcU -and $svcU.Status -eq 'Running') { OK "MassUpdater running (polls every 5 min)" }
+else { Warn "MassUpdater installed but not running" }
+
+# ── Step 10: Firewall ─────────────────────────────────────────────────────────
+Step "Configuring firewall..."
+Remove-NetFirewallRule -DisplayName "Mass*" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Mass SSH In"    -Direction Inbound  -Protocol TCP -LocalPort 22        -Action Allow | Out-Null
+New-NetFirewallRule -DisplayName "Mass Relay Out" -Direction Outbound -Protocol TCP -RemotePort 443,7744 -Action Allow | Out-Null
+OK "Firewall rules set"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "  ║              Installation Complete!                  ║" -ForegroundColor Green
-Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "  ║          Installation Complete!                  ║" -ForegroundColor Green
+Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Device     : $Label ($DeviceId)" -ForegroundColor Cyan
-Write-Host "  Relay      : ${RelayHost}:${RelayPort}" -ForegroundColor Cyan
-Write-Host "  Service    : Running (auto-starts before login)" -ForegroundColor Cyan
-Write-Host "  SSH        : Locked to owner key only, no passwords" -ForegroundColor Cyan
+Write-Host "  Device  : $Label ($DeviceId)" -ForegroundColor Cyan
+Write-Host "  Relay   : ${RelayHost}:${RelayPort}" -ForegroundColor Cyan
+Write-Host "  SSH     : Public-key only, locked to owner key"  -ForegroundColor Green
+Write-Host "  Updates : Auto every 5 min (MassUpdater service)" -ForegroundColor Green
 Write-Host ""
-Write-Host "  ┌─────────────────────────────────────────────────────┐" -ForegroundColor Yellow
-Write-Host "  │  ACTION NEEDED - copy this private key to your      │" -ForegroundColor Yellow
-Write-Host "  │  laptop to be able to SSH into this machine:        │" -ForegroundColor Yellow
-Write-Host "  └─────────────────────────────────────────────────────┘" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  Private key is at:" -ForegroundColor White
-Write-Host "    $PrivKeyPath" -ForegroundColor White
-Write-Host ""
-Write-Host "  Copy it to your laptop:" -ForegroundColor White
-Write-Host "    - Open the file above in Notepad, copy the contents" -ForegroundColor White
-Write-Host "    - On your laptop, save it as: ~/.ssh/id_ms_${Label.Replace(' ','_')}" -ForegroundColor White
-Write-Host "    - Then SSH with: ssh -i ~/.ssh/id_ms_${Label.Replace(' ','_')} Administrator@<ip>" -ForegroundColor White
-Write-Host "    - msmgr will use it automatically" -ForegroundColor White
+Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Yellow
+Write-Host "  │  Copy this private key to your laptop once:      │" -ForegroundColor Yellow
+Write-Host "  │  Save as: ~/.ms/keys/id_$Label" -ForegroundColor Yellow
+Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Yellow
 Write-Host ""
 
-# Display the public key for reference
-Write-Host "  Public key (already locked to this PC):" -ForegroundColor DarkGray
-Write-Host "  $OwnerPublicKey" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  Log file: $DataDir\agent.log" -ForegroundColor DarkGray
-Write-Host ""
-
-# Offer to display private key contents directly in terminal for easy copy
-$show = Read-Host "  Show private key contents in terminal now for copy-paste? [Y/N]"
-if ($show -match '^[Yy]') {
+$ans = Read-Host "  Show private key now for copy-paste? [Y/N]"
+if ($ans -match '^[Yy]') {
     Write-Host ""
-    Write-Host "  ===== PRIVATE KEY (copy everything between the lines) =====" -ForegroundColor Yellow
-    Get-Content $PrivKeyPath
+    Write-Host "  ===== PRIVATE KEY — copy everything below =====" -ForegroundColor Yellow
+    Get-Content $PrivKey
     Write-Host "  ===== END PRIVATE KEY =====" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Save this as ~/.ssh/id_ed25519 on your laptop (or any filename you want)" -ForegroundColor Cyan
-    Write-Host "  Set permissions: chmod 600 ~/.ssh/id_ed25519  (on Linux/macOS)" -ForegroundColor Cyan
-    Write-Host "  On Windows: the file just needs to be in your .ssh folder" -ForegroundColor Cyan
+    Write-Host "  On your laptop:" -ForegroundColor Cyan
+    Write-Host "    1. Save above as: ~/.ms/keys/id_$Label" -ForegroundColor White
+    Write-Host "    2. Run: ms   (auto-discovers devices, no config needed)" -ForegroundColor White
 }
 
 Write-Host ""
-Write-Host "  All done. This device will connect to the relay automatically on every boot." -ForegroundColor Green
+Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
+Log "=== Install complete ==="
 Write-Host ""
-Write-Host "  Press any key to close this window..." -ForegroundColor DarkGray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "  Press any key to close..." -ForegroundColor DarkGray
+try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 5 }

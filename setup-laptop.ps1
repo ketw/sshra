@@ -28,14 +28,15 @@ if (-not $isAdmin) {
     exit 0
 }
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 $MsDir      = "C:\Program Files\Mass"          # install dir, added to PATH
 $MsConfig   = "$env:USERPROFILE\.ms"           # user config dir
 $MsKeys     = "$MsConfig\keys"                 # private keys per device
 $MsCfgFile  = "$MsConfig\config.json"          # relay config
 $MgrExe     = "$MsDir\msmgr.exe"              # the manager binary
-$MgrUrl     = "https://github.com/ketw/sshra/releases/download/v1.0.1/msmgr.exe"
-$MgrUrlFallback = "https://github.com/ketw/sshra/releases/download/v1.0.1/msmgr.exe"
+$MgrUrl         = "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msmgr.exe"
+$MgrUrlFallback = "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msmgr.exe"
+$TempUrl        = "https://raw.githubusercontent.com/ketw/sshra/master/.temp"
 
 function Write-Step { param($m) Write-Host "  [..] $m" -ForegroundColor Cyan }
 function Write-OK   { param($m) Write-Host "  [OK] $m" -ForegroundColor Green }
@@ -43,20 +44,20 @@ function Write-Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
 
 Clear-Host
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
-Write-Host "  ║        Mass (ms) - Laptop Setup              ║" -ForegroundColor Magenta
-Write-Host "  ║        After this, just type: ms             ║" -ForegroundColor Magenta
-Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
+Write-Host "  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—" -ForegroundColor Magenta
+Write-Host "  â•‘        Mass (ms) - Laptop Setup              â•‘" -ForegroundColor Magenta
+Write-Host "  â•‘        After this, just type: ms             â•‘" -ForegroundColor Magenta
+Write-Host "  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
 Write-Host ""
 
-# ── Step 1: Directories ───────────────────────────────────────────────────────
+# â”€â”€ Step 1: Directories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Step "Creating directories..."
 New-Item -ItemType Directory -Force -Path $MsDir    | Out-Null
 New-Item -ItemType Directory -Force -Path $MsConfig | Out-Null
 New-Item -ItemType Directory -Force -Path $MsKeys   | Out-Null
 Write-OK "Directories ready"
 
-# ── Step 2: Download msmgr.exe ────────────────────────────────────────────────
+# â”€â”€ Step 2: Download msmgr.exe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Step "Downloading msmgr.exe..."
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $downloaded = $false
@@ -90,7 +91,7 @@ if (-not $downloaded) {
     throw "Could not obtain msmgr.exe. Build it first with: build\build-manager.bat"
 }
 
-# ── Step 3: Add to system PATH ────────────────────────────────────────────────
+# â”€â”€ Step 3: Add to system PATH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Step "Adding 'ms' to system PATH..."
 $syspath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
 if ($syspath -notlike "*$MsDir*") {
@@ -101,47 +102,65 @@ if ($syspath -notlike "*$MsDir*") {
     Write-OK "Already in PATH"
 }
 
-# ── Step 4: Create 'ms' command wrapper ───────────────────────────────────────
+# â”€â”€ Step 4: Create 'ms' command wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Step "Creating 'ms' command..."
 Set-Content -Path "$MsDir\ms.cmd" -Value "@echo off`r`n`"$MgrExe`" %*" -Encoding ASCII
-Write-OK "Created ms.cmd — type 'ms' in any new terminal"
+Write-OK "Created ms.cmd â€” type 'ms' in any new terminal"
 
-# ── Step 5: Configure relay ───────────────────────────────────────────────────
-Write-Host ""
-Write-Host "  ─────────────────────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  Relay configuration" -ForegroundColor White
-Write-Host "  ─────────────────────────────────────────────────────" -ForegroundColor DarkGray
-
-# Load existing config if present
+# â”€â”€ Step 5: Load relay config from repo .temp/.env (no prompt) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Loading relay config from repo..."
 $relayHost  = ""
-$relayPort  = "10000"
+$relayPort  = "443"
 $relayToken = ""
+
+# First check if local config already exists and is complete
 if (Test-Path $MsCfgFile) {
     try {
         $existing = Get-Content $MsCfgFile -Raw | ConvertFrom-Json
-        $relayHost  = $existing.relay_host
-        $relayPort  = $existing.relay_port
-        $relayToken = $existing.relay_token
-        if ($relayHost) { Write-OK "Existing relay config found: ${relayHost}:${relayPort}" }
+        if ($existing.relay_host -and $existing.relay_token) {
+            $relayHost  = $existing.relay_host
+            $relayPort  = if ($existing.relay_port) { $existing.relay_port } else { "443" }
+            $relayToken = $existing.relay_token
+            Write-OK "Loaded from existing config: ${relayHost}:${relayPort}"
+        }
     } catch {}
 }
 
-if (-not $relayHost) {
-    $relayHost = (Read-Host "  Relay host (e.g. ra-u9qf.onrender.com)").Trim()
-    $relayHost = $relayHost -replace '^https?://', '' -replace '/$', ''
-}
-if (-not $relayToken) {
-    $relayToken = (Read-Host "  Relay auth token").Trim()
+# Fetch from .temp/.env if not already set
+if (-not $relayHost -or -not $relayToken) {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $envRaw = (New-Object System.Net.WebClient).DownloadString("$TempUrl/.env")
+        foreach ($line in ($envRaw -split "`n")) {
+            $line = $line.Trim()
+            if ($line -match '^\s*#' -or $line -eq '') { continue }
+            if ($line -match '^([^=]+)=(.*)$') {
+                $k = $Matches[1].Trim(); $v = $Matches[2].Trim()
+                if ($k -eq 'RELAY_HOST')  { $relayHost  = $v }
+                if ($k -eq 'RELAY_PORT')  { $relayPort  = $v }
+                if ($k -eq 'RELAY_TOKEN') { $relayToken = $v }
+            }
+        }
+        Write-OK "Config loaded from repo: ${relayHost}:${relayPort}"
+    } catch {
+        Write-Warn "Could not fetch .env from repo: $_"
+        # Fall back to prompt only if still empty
+        if (-not $relayHost) {
+            $relayHost = (Read-Host "  Relay host (e.g. ra-u9qf.onrender.com)").Trim()
+            $relayHost = $relayHost -replace '^https?://', '' -replace '/$', ''
+        }
+        if (-not $relayToken) { $relayToken = (Read-Host "  Relay auth token").Trim() }
+    }
 }
 
-# ── Step 6: Import device private keys ────────────────────────────────────────
+# â”€â”€ Step 6: Import device private keys â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host ""
-Write-Host "  ─────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€" -ForegroundColor DarkGray
 Write-Host "  Import private keys from your remote devices" -ForegroundColor White
 Write-Host "  Each device generated a key during msagent install." -ForegroundColor DarkGray
 Write-Host "  Paste the private key contents when prompted." -ForegroundColor DarkGray
 Write-Host "  Press Enter with no device name when done." -ForegroundColor DarkGray
-Write-Host "  ─────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€" -ForegroundColor DarkGray
 Write-Host ""
 
 $importedKeys = @()
@@ -155,7 +174,7 @@ while ($true) {
 
     # Skip if already imported this session
     if ($importedKeys | Where-Object { $_.SafeName -eq $safeName }) {
-        Write-Warn "'$deviceName' already imported this session — skipping."
+        Write-Warn "'$deviceName' already imported this session â€” skipping."
         continue
     }
 
@@ -176,7 +195,7 @@ while ($true) {
     if ($keyContent -match "BEGIN OPENSSH PRIVATE KEY|BEGIN RSA PRIVATE KEY|BEGIN EC PRIVATE KEY") {
         [System.IO.File]::WriteAllText($keyPath, $keyContent + "`n")
 
-        # Lock permissions — SSH refuses world-readable keys
+        # Lock permissions â€” SSH refuses world-readable keys
         try {
             $acl = New-Object System.Security.AccessControl.FileSecurity
             $acl.SetAccessRuleProtection($true, $false)
@@ -190,12 +209,12 @@ while ($true) {
         Write-OK "Key saved: $keyPath"
         $importedKeys += [PSCustomObject]@{ Device = $deviceName; SafeName = $safeName; KeyPath = $keyPath }
     } else {
-        Write-Warn "Doesn't look like a valid private key — skipped. Try again."
+        Write-Warn "Doesn't look like a valid private key â€” skipped. Try again."
     }
     Write-Host ""
 }
 
-# ── Step 7: Write config.json ─────────────────────────────────────────────────
+# â”€â”€ Step 7: Write config.json â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Step "Writing config..."
 
 # Merge with existing keys
@@ -220,11 +239,11 @@ $cfgObj = [ordered]@{
 $cfgObj | ConvertTo-Json -Depth 4 | Set-Content -Path $MsCfgFile -Encoding UTF8
 Write-OK "Config written: $MsCfgFile"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "  ║             Laptop Setup Complete!                   ║" -ForegroundColor Green
-Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—" -ForegroundColor Green
+Write-Host "  â•‘             Laptop Setup Complete!                   â•‘" -ForegroundColor Green
+Write-Host "  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Install dir : $MsDir"     -ForegroundColor Cyan
 Write-Host "  Config      : $MsCfgFile" -ForegroundColor Cyan

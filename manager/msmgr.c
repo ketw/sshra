@@ -28,6 +28,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <shellapi.h>
+#include <winhttp.h>
 #include <winreg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -350,9 +351,11 @@ static void ui_draw(void) {
     printf(COL_RESET "\n");
     printf("  " COL_BOLD "[↑↓]" COL_RESET " Navigate  "
                   COL_BOLD "[Enter]" COL_RESET " SSH  "
-                  COL_BOLD "[F]" COL_RESET " Files(SFTP)  "
+                  COL_BOLD "[F]" COL_RESET " Files  "
                   COL_BOLD "[R]" COL_RESET " RDP  "
                   COL_BOLD "[T]" COL_RESET " New window  "
+                  COL_BOLD "[U]" COL_RESET " Update device  "
+                  COL_BOLD "[Ctrl+U]" COL_RESET " Update ALL  "
                   COL_BOLD "[A]" COL_RESET " Add relay  "
                   COL_BOLD "[Q]" COL_RESET " Quit\n");
     fflush(stdout);
@@ -735,7 +738,46 @@ static void action_rdp(ui_device_t *d) {
 
 /* Open a new terminal window connected to same device */
 static void action_new_window(ui_device_t *d) {
-    action_ssh(d);  /* Just opens another SSH window */
+    action_ssh(d);
+}
+
+/* ============================================================
+ * PUSH UPDATE — send push_update message to one or all devices
+ * The device's MassUpdater service listens on the relay for this.
+ * 'target_id' = specific device_id, or "" to broadcast to all.
+ * ============================================================ */
+static void action_push_update(const char *target_id) {
+    if (g_relay_count == 0) {
+        printf(COL_YELLOW "\n  No relay configured.\n" COL_RESET);
+        Sleep(1500); return;
+    }
+
+    /* Connect to relay as manager */
+    SOCKET s = relay_connect_and_auth(&g_relays[0]);
+    if (s == INVALID_SOCKET) {
+        printf(COL_RED "\n  Could not connect to relay.\n" COL_RESET);
+        Sleep(1500); return;
+    }
+
+    /* Send push_update message */
+    char buf[512];
+    json_builder_t jb; jb_init(&jb, buf, sizeof(buf));
+    jb_begin(&jb);
+    jb_str(&jb, "type", "push_update");
+    if (target_id && target_id[0])
+        jb_str(&jb, "device_id", target_id);   /* targeted */
+    else
+        jb_str(&jb, "device_id", "*");          /* broadcast to all */
+    jb_end(&jb);
+
+    if (net_send_msg(s, buf) == 0)
+        printf(COL_GREEN "\n  Update pushed to %s\n" COL_RESET,
+               (target_id && target_id[0]) ? target_id : "ALL devices");
+    else
+        printf(COL_RED "\n  Failed to send update push.\n" COL_RESET);
+
+    closesocket(s);
+    Sleep(1200);
 }
 
 /* ============================================================
@@ -1011,6 +1053,27 @@ static void input_loop(void) {
             action_add_relay();
             SetEvent(g_refresh_event);
         }
+        else if (ch == 'u' || ch == 'U') {
+            /* U = push update to selected device, Shift+U already = 'U'
+             * Hold Ctrl+U to push to ALL devices */
+            BOOL ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (ctrl) {
+                /* Push to all */
+                action_push_update("");
+            } else {
+                EnterCriticalSection(&g_dev_cs);
+                if (g_selected >= 0 && g_selected < g_device_count) {
+                    char dev_id[MAX_DEVICE_ID_LEN];
+                    strncpy(dev_id, g_devices[g_selected].device_id,
+                            MAX_DEVICE_ID_LEN-1);
+                    LeaveCriticalSection(&g_dev_cs);
+                    action_push_update(dev_id);
+                } else {
+                    LeaveCriticalSection(&g_dev_cs);
+                }
+            }
+            SetEvent(g_refresh_event);
+        }
         else if (ch == 'q' || ch == 'Q' || vk == VK_ESCAPE) {
             g_running = 0;
             SetEvent(g_refresh_event);
@@ -1028,7 +1091,7 @@ int main(int argc, char *argv[]) {
     /* Quick relay config from command line: msmgr.exe relay.host token */
     if (argc >= 3) {
         strncpy(g_relays[0].host,  argv[1], 255);
-        strncpy(g_relays[0].port,  argc >= 4 ? argv[3] : RELAY_PORT_STR, 15);
+        strncpy(g_relays[0].port,  argc >= 4 ? argv[3] : "443", 15);
         strncpy(g_relays[0].token, argv[2], MAX_TOKEN_LEN-1);
         g_relay_count = 1;
         config_save();
@@ -1041,21 +1104,74 @@ int main(int argc, char *argv[]) {
     con_init();
     config_load();
 
-    /* Show setup prompt if no relays configured */
+    /* Auto-bootstrap from .temp/.env if no relay configured */
     if (g_relay_count == 0) {
-        con_cls();
-        printf(COL_BOLD COL_CYAN "  Mass Manager - First Run Setup\n\n" COL_RESET);
-        printf("  No relay servers configured yet.\n\n");
-        printf("  Usage: msmgr.exe <relay-host> <auth-token> [port]\n");
-        printf("  Or press any key to configure interactively...\n\n");
-        fflush(stdout);
-        /* wait for a key or just fall through to add_relay */
-        DWORD mode;
-        GetConsoleMode(g_console_in, &mode);
-        SetConsoleMode(g_console_in, ENABLE_PROCESSED_INPUT);
-        INPUT_RECORD ir; DWORD nr;
-        ReadConsoleInputA(g_console_in, &ir, 1, &nr);
-        action_add_relay();
+        /* Try to fetch config from repo */
+        const char *env_url = "https://raw.githubusercontent.com/ketw/sshra/master/.temp/.env";
+        HINTERNET sess = WinHttpOpen(L"msmgr/1.0",
+                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                      WINHTTP_NO_PROXY_NAME,
+                                      WINHTTP_NO_PROXY_BYPASS, 0);
+        if (sess) {
+            HINTERNET conn = WinHttpConnect(sess,
+                L"raw.githubusercontent.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+            if (conn) {
+                HINTERNET req = WinHttpOpenRequest(conn, L"GET",
+                    L"/ketw/sshra/master/.temp/.env",
+                    NULL, WINHTTP_NO_REFERER,
+                    WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+                if (req && WinHttpSendRequest(req, NULL, 0, NULL, 0, 0, 0)
+                        && WinHttpReceiveResponse(req, NULL)) {
+                    char body[4096] = {0}; DWORD got = 0, total = 0;
+                    while (WinHttpReadData(req, body+total,
+                                          (DWORD)(sizeof(body)-total-1), &got) && got)
+                        total += got;
+                    body[total] = '\0';
+                    /* Parse KEY=VALUE lines */
+                    char *line = strtok(body, "\n");
+                    while (line) {
+                        while (*line == ' ' || *line == '\r') line++;
+                        if (*line && *line != '#') {
+                            char *eq = strchr(line, '=');
+                            if (eq) {
+                                *eq = '\0'; char *k = line, *v = eq+1;
+                                while (*v == ' ') v++;
+                                int vlen = (int)strlen(v);
+                                while (vlen > 0 && (v[vlen-1]=='\r'||v[vlen-1]=='\n'||v[vlen-1]==' '))
+                                    v[--vlen] = '\0';
+                                if (strcmp(k,"RELAY_HOST")==0)  strncpy(g_relays[0].host, v, 255);
+                                if (strcmp(k,"RELAY_PORT")==0)  strncpy(g_relays[0].port, v, 15);
+                                if (strcmp(k,"RELAY_TOKEN")==0) strncpy(g_relays[0].token,v, MAX_TOKEN_LEN-1);
+                            }
+                        }
+                        line = strtok(NULL, "\n");
+                    }
+                    if (g_relays[0].host[0]) {
+                        if (!g_relays[0].port[0]) strcpy(g_relays[0].port, "443");
+                        g_relay_count = 1;
+                        config_save();
+                    }
+                    WinHttpCloseHandle(req);
+                }
+                WinHttpCloseHandle(conn);
+            }
+            WinHttpCloseHandle(sess);
+        }
+
+        /* Still no config — prompt */
+        if (g_relay_count == 0) {
+            con_cls();
+            printf(COL_BOLD COL_CYAN "  Mass Manager - Setup\n\n" COL_RESET);
+            printf("  Could not auto-load config. Run setup-laptop.ps1 first, or:\n");
+            printf("  Usage: ms <relay-host> <auth-token>\n\n");
+            fflush(stdout);
+            DWORD mode;
+            GetConsoleMode(g_console_in, &mode);
+            SetConsoleMode(g_console_in, ENABLE_PROCESSED_INPUT);
+            INPUT_RECORD ir; DWORD nr;
+            ReadConsoleInputA(g_console_in, &ir, 1, &nr);
+            action_add_relay();
+        }
     }
 
     /* Spawn relay poll threads for each configured relay */
