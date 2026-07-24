@@ -141,20 +141,49 @@ static char *http_get(const wchar_t *host, const wchar_t *path,
     return body;
 }
 
-/* Download a file to a local path. Returns 1 on success. */
+/* Download a base64-encoded file, decode it, and write binary to dest.
+ * Returns 1 on success. GitHub serves binary files as .b64 text. */
 static int http_download(const wchar_t *host, const wchar_t *path,
                           const char *dest) {
     DWORD len = 0;
-    char *data = http_get(host, path, &len);
-    if (!data || len == 0) { free(data); return 0; }
+    char *b64 = http_get(host, path, &len);
+    if (!b64 || len == 0) { free(b64); return 0; }
 
+    /* Strip whitespace/newlines from base64 */
+    char *clean = (char*)malloc(len + 1);
+    if (!clean) { free(b64); return 0; }
+    DWORD ci = 0;
+    for (DWORD i = 0; i < len; i++) {
+        char c = b64[i];
+        if (c != '\r' && c != '\n' && c != ' ') clean[ci++] = c;
+    }
+    clean[ci] = '\0';
+    free(b64);
+
+    /* Base64 decode using CryptStringToBinaryA */
+    DWORD bin_len = 0;
+    if (!CryptStringToBinaryA(clean, ci, CRYPT_STRING_BASE64, NULL, &bin_len, NULL, NULL)) {
+        free(clean); return 0;
+    }
+    BYTE *bin = (BYTE*)malloc(bin_len);
+    if (!bin) { free(clean); return 0; }
+    if (!CryptStringToBinaryA(clean, ci, CRYPT_STRING_BASE64, bin, &bin_len, NULL, NULL)) {
+        free(clean); free(bin); return 0;
+    }
+    free(clean);
+
+    /* Write to temp file then atomically replace dest */
     char tmp_path[MAX_PATH];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", dest);
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) { free(data); return 0; }
-    fwrite(data, 1, len, f);
-    fclose(f);
-    free(data);
+    HANDLE fh = CreateFileA(tmp_path, GENERIC_WRITE, 0, NULL,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (fh == INVALID_HANDLE_VALUE) { free(bin); return 0; }
+    DWORD written = 0;
+    WriteFile(fh, bin, bin_len, &written, NULL);
+    CloseHandle(fh);
+    free(bin);
+
+    if (written != bin_len) { DeleteFileA(tmp_path); return 0; }
 
     /* Atomic replace */
     char bak[MAX_PATH];
@@ -162,7 +191,7 @@ static int http_download(const wchar_t *host, const wchar_t *path,
     DeleteFileA(bak);
     MoveFileA(dest, bak);
     if (!MoveFileA(tmp_path, dest)) {
-        MoveFileA(bak, dest); /* restore */
+        MoveFileA(bak, dest);
         return 0;
     }
     return 1;

