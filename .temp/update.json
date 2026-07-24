@@ -1,4 +1,4 @@
-{
+﻿{
   "version": "1.0.1",
   "push_update": false,
   "msagent": {
@@ -7,7 +7,8 @@
   },
   "msupdate": {
     "url": "https://raw.githubusercontent.com/ketw/sshra/master/.temp/msupdate.exe.b64",
-    "sha256": "88c75e1e10dcd82c9fc2bfcf4b700b00e5e94ff3e60b7dd0f5d90af5b2c8c011"
+    "sha256": "325ce51cfa11f013594fec50910235ad73448a3a4b97f224747124b1c0ebde4c"
   },
   "changelog": "WebSocket transport, auto-updater, zero-prompt installer, push-update from manager"
 }
+
